@@ -22,13 +22,15 @@ projects. It extends the standard Git Flow methodology to support:
 
 ## Installation
 
-Run the included installer script:
+### Quick Install (One-Liner)
+
+Install the latest version directly from GitHub using `curl`:
 
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh | bash
 ```
 
-This will install the tools to `~/.git-trident` and update your shell profile.
+This downloads the installer, fetches the latest release package, and installs Git Trident to ~/.git-trident. Your shell profile is updated automatically.
 
 ## Documentation
 

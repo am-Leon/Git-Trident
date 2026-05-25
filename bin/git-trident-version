@@ -23,7 +23,7 @@ show_version_info() {
 
     # Banner
     log_info "═══════════════════════════════════════════════════════════════"
-    log_info "                     GIT TRIDENT v$version                  "
+    log_info "                     GIT TRIDENT $version                  "
     log_info "═══════════════════════════════════════════════════════════════"
     log_empty ""
 
@@ -499,16 +499,18 @@ perform_health_check() {
 }
 
 # =============================================================================
-# UPDATE CHECKING (ENHANCED)
+# UPDATE CHECKING (PROFESSIONAL CLI PATTERN)
 # =============================================================================
 
 check_for_updates() {
+    local mode="$1"          # check | dry-run | update
+    local auto_apply="${2:-false}"
+
     log_info "🔄 UPDATE CHECK"
     log_info "═════════════════════════════════════════════════════════════════"
     log_empty ""
 
     local current_version="${TRIDENT_VERSION:-unknown}"
-    local apply="${1:-false}"
 
     log_info "📊 CURRENT VERSION"
     log_info "   • Version:       $current_version"
@@ -521,106 +523,114 @@ check_for_updates() {
 
     local latest_tag=""
     if [[ -n "$response" ]]; then
-        latest_tag=$(echo "$response" | grep -m1 '"tag_name":' | sed -E 's/.*"tag_name":\s*"(v?[0-9.]+)".*/\1/' | tr -d '"v,')
+        # Robust JSON parsing: strips optional leading 'v' if present
+        latest_tag=$(echo "$response" | awk -F'"' '/"tag_name":/ {print $4; exit}' | sed 's/^v//')
     fi
 
-    if [[ -n "$latest_tag" ]]; then
-        local cur_clean=$(echo "$current_version" | tr -d '"v')
-        local new_clean=$(echo "$latest_tag" | tr -d '"v')
-
-        log_info "   • Latest Tag:    v$latest_tag"
-        log_empty ""
-
-        if [[ "$cur_clean" != "$new_clean" ]]; then
-            log_warn "   • 🚀 A new version is available: v$latest_tag"
-            log_empty ""
-
-            if [[ "$apply" == "true" ]]; then
-                log_step "Initiating auto-upgrade to v$latest_tag..."
-
-                # Check for curl
-                if ! command -v curl >/dev/null 2>&1; then
-                    log_error "curl is required to perform auto-upgrade."
-                    exit 1
-                fi
-
-                # Fetch and run the remote installer (which will pull the specified version)
-                export INSTALL_VERSION="v$latest_tag"
-                log_info "Downloading and executing remote installer..."
-
-                if curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh" | bash; then
-                    log_info "✅ Successfully upgraded to v$latest_tag!"
-                    exit 0
-                else
-                    log_error "❌ Upgrade failed."
-                    exit 1
-                fi
-            else
-                log_info "👉 To automatically install this update, run:"
-                log_info "     git trident version update --apply"
-                log_empty ""
-            fi
-        else
-            log_info "   • ✅ You are running the latest version (v$current_version)."
-            log_empty ""
-        fi
-    else
+    if [[ -z "$latest_tag" ]]; then
         log_warn "   • ⚠️ Could not reach GitHub Releases API (offline or rate-limited)."
         log_info "     You can check manually at: https://github.com/${GITHUB_REPO}"
         log_empty ""
+        return 1
     fi
 
-    # Version compatibility
-    log_info "📋 VERSION COMPATIBILITY"
-    log_info "   • Bash:          ${BASH_VERSION}"
-    log_info "   • Git:           $(git --version 2>/dev/null | sed 's/git version //' || echo "Not found")"
-    log_info "   • Platform:      $(uname -s) $(uname -m)"
+    log_info "   • Latest Tag:    $latest_tag"
     log_empty ""
 
-    # Check for known issues
-    log_info "⚠️  KNOWN ISSUES"
+    local cur_clean="$current_version"
+    local new_clean="$latest_tag"
 
-    # Check Bash version for associative arrays
-    if [[ "${BASH_VERSION%%.*}" -lt 4 ]]; then
-        log_warn "   • Bash $BASH_VERSION - No associative array support"
-        log_info "     Some features limited. Upgrade to Bash 4+ recommended."
-    else
-        log_info "   • ✅ Bash $BASH_VERSION - Full feature support"
+    if [[ "$cur_clean" == "$new_clean" ]]; then
+        log_info "✅ You are running the latest version ($current_version)."
+        log_empty ""
+        return 0
     fi
 
-    # Check for common tools
-    local missing_tools=""
-    for tool in git grep sed awk sort; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            missing_tools="$missing_tools $tool"
-        fi
-    done
+    # An update is available — handle according to mode
+    case "$mode" in
+        check)
+            log_warn "🚀 Update available: $current_version → $latest_tag"
+            log_info "👉 Run 'git trident version update' to install."
+            log_empty ""
+            return 1   # Non-zero exit code signals "update available" for scripts
+            ;;
+        dry-run)
+            log_info "🔍 DRY RUN — No changes will be made."
+            log_info "   Current:  $current_version"
+            log_info "   Latest:   $latest_tag"
+            log_info "   Source:   https://github.com/${GITHUB_REPO}/releases/tag/${latest_tag}"
+            log_info "   Action:   Download installer to temp file"
+            log_info "             Run: INSTALL_VERSION=$latest_tag bash <tmp-file>"
+            log_empty ""
+            return 0
+            ;;
+        update)
+            log_warn "🚀 Update available: $current_version → $latest_tag"
+            log_empty ""
 
-    if [ -n "$missing_tools" ]; then
-        log_warn "   • Missing tools:$missing_tools"
-    else
-        log_info "   • ✅ All required tools available"
-    fi
-    log_empty ""
+            if [[ "$auto_apply" != true ]]; then
+                echo -n "Install $current_version → $latest_tag? [Y/n]: "
+                read -r response
+                if [[ "$response" =~ ^([nN][oO]?|[nN])$ ]]; then
+                    log_info "Update cancelled."
+                    return 0
+                fi
+            fi
 
-    log_info "═════════════════════════════════════════════════════════════════"
+            log_step "Initiating upgrade to $latest_tag..."
+
+            if ! command -v curl >/dev/null 2>&1; then
+                log_error "curl is required to perform auto-upgrade."
+                exit 1
+            fi
+
+            local tmp_installer
+            tmp_installer=$(mktemp)
+
+            log_info "Downloading installer..."
+            if ! curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh" -o "$tmp_installer"; then
+                rm -f "$tmp_installer"
+                log_error "Failed to download installer."
+                exit 1
+            fi
+
+            log_info "Running installer..."
+            export INSTALL_VERSION="$latest_tag"
+            if bash "$tmp_installer"; then
+                rm -f "$tmp_installer"
+                log_info "✅ Successfully upgraded to $latest_tag!"
+                exit 0
+            else
+                rm -f "$tmp_installer"
+                log_error "❌ Upgrade failed."
+                exit 1
+            fi
+            ;;
+    esac
 }
 
 # =============================================================================
-# ARGUMENT PARSING (ENHANCED)
+# ARGUMENT PARSING (PROFESSIONAL UPDATE COMMANDS)
 # =============================================================================
 
 parse_arguments() {
     local command=""
-    APPLY_UPDATE=false
+    DRY_RUN=false
+    SKIP_CONFIRM=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            "check-update"|"update")
-                command="check-update"
+            "check")
+                command="check"
                 ;;
-            "--apply"|"-a")
-                APPLY_UPDATE=true
+            "update")
+                command="update"
+                ;;
+            "--dry-run")
+                DRY_RUN=true
+                ;;
+            "--yes"|"-y")
+                SKIP_CONFIRM=true
                 ;;
             "env"|"environment")
                 command="env"
@@ -638,7 +648,6 @@ parse_arguments() {
                 DEBUG=true
                 ;;
             "--help"|"-h"|"help")
-                # Source help module if available
                 if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
                     source "$SCRIPT_DIR/../lib/git-trident-help.sh"
                     show_version_help
@@ -648,7 +657,6 @@ parse_arguments() {
                 exit 0
                 ;;
             *)
-                # If it's an unrecognized option but we're parsing update, check if it's --apply
                 log_error "Unknown option: $1"
                 if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
                     source "$SCRIPT_DIR/../lib/git-trident-help.sh"
@@ -668,13 +676,19 @@ parse_arguments() {
 # =============================================================================
 
 main() {
-    # Parse arguments
     parse_arguments "$@"
     local command="$PARSE_RESULT_COMMAND"
 
     case "$command" in
-        "check-update")
-            check_for_updates "${APPLY_UPDATE:-false}"
+        "check")
+            check_for_updates "check"
+            ;;
+        "update")
+            if [[ "$DRY_RUN" == true ]]; then
+                check_for_updates "dry-run"
+            else
+                check_for_updates "update" "$SKIP_CONFIRM"
+            fi
             ;;
         "env")
             show_environment_info
@@ -686,7 +700,6 @@ main() {
             perform_health_check
             ;;
         "config-help")
-            # Source help.sh and show config help
             if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
                 source "$SCRIPT_DIR/../lib/git-trident-help.sh"
                 show_config_help
@@ -696,7 +709,6 @@ main() {
             fi
             ;;
         "")
-            # No command specified, show full version info
             show_version_info
             ;;
         *)

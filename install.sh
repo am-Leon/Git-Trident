@@ -94,18 +94,29 @@ check_dependencies() {
 }
 
 BACKUP_DIR="${INSTALL_DIR}_backup_$(date +%Y%m%d_%H%M%S)"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# =============================================================================
+# SAFE SCRIPT_DIR (handles piped execution: curl | bash)
+# =============================================================================
+
+# If BASH_SOURCE[0] is unset (piped execution), SCRIPT_DIR becomes empty string
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    SCRIPT_DIR=""
+fi
+
 SUCCESS_FLAG=false
 TEMP_DIR=""
 
 # =============================================================================
 # DETECT & HANDLE REMOTE INSTALLATION MODE (curl | bash)
 # =============================================================================
-GITHUB_REPO="am-Leon/Git-Trident" # USER can update this to their public repo
+GITHUB_REPO="am-Leon/Git-Trident"
 INSTALL_VERSION="${INSTALL_VERSION:-latest}"
 
-# If bin/git-trident doesn't exist relative to script run-path, we are in Remote Mode
-if [[ ! -f "$SCRIPT_DIR/bin/git-trident" ]]; then
+# Remote mode: empty SCRIPT_DIR OR local bin/git-trident not found
+if [[ -z "$SCRIPT_DIR" ]] || [[ ! -f "$SCRIPT_DIR/bin/git-trident" ]]; then
     check_dependencies
     log_step "Remote execution detected. Preparing to download package..."
 
@@ -168,7 +179,7 @@ detect_active_profile() {
 }
 
 # =============================================================================
-# POST-INSTALLATION INSTRUCTIONS (From your original script)
+# POST-INSTALLATION INSTRUCTIONS
 # =============================================================================
 
 show_post_install_instructions() {
