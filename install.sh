@@ -195,31 +195,26 @@ show_post_install_instructions() {
     log_info "⚙️  Global config:    $global_config"
 
     log_empty
-    log_info "🔧 CONFIGURATION SETUP"
+    log_info "🔧 NEXT STEPS"
     log_info "=========================================="
-    log_info "Your machine now has a GLOBAL config at:"
-    log_info "   $global_config"
-    log_info "This file controls machine-level behavior (auto-push, security, debug)."
-    log_empty
-    log_info "Each project needs its OWN project config.  Copy the project template:"
-    log_info "   cp '$project_template' './git-trident-config'"
-    log_info "   # Then edit for your project (branch names, tag prefixes, platforms…)"
-    log_info "   # Commit it to git — teammates get your settings automatically."
+    log_info "1. Restart your terminal or run:"
+    log_info "     source $profile"
 
     log_empty
-    log_info "🚀 Git Trident are now ready to use!"
-    log_empty
-    log_info "🔧 TESTING INSTALLATION"
-    log_info "=========================================="
-    log_info "  git trident -h                     # Show all commands"
-    log_info "  git trident version                # Show version info"
+    log_info "2. Inside any Git project, initialize Git Trident:"
+    log_info "     git trident config init"
+    log_info "   This creates the project config and sets up hooks."
 
     log_empty
-    log_info "💡 IMPORTANT NOTES"
+    log_info "3. Verify the installation:"
+    log_info "     git trident -h"
+    log_info "     git trident version"
+
+    log_empty
+    log_info "💡 CONFIGURATION NOTES"
     log_info "=========================================="
-    log_info "• If you face 'command not found', run: ${UI[GREEN]}source $profile${UI[NC]}"
-    log_info "• Global-only keys (AUTO_PUSH, DEBUG…) go in:  ~/.git-trident-config"
-    log_info "• Project keys (branch names, platforms…) go in: ./git-trident-config"
+    log_info "• Global settings (auto-push, debug, security) → ~/.git-trident-config"
+    log_info "• Project settings (branches, platforms, tags) → ./git-trident-config"
 }
 
 # =============================================================================
@@ -256,12 +251,17 @@ uninstall() {
     sed -i.bak '/\.git-trident\/bin/d' "$profile" 2>/dev/null || true
     log_info "✓ Profile cleaned: $profile"
 
-    # 3. Handle Global Config (with confirmation)
+    # 3. Handle Global Config (with confirmation, safe for pipes)
     local global_config="$HOME/.git-trident-config"
     if [[ -f "$global_config" ]]; then
-        echo -e -n "${UI[YELLOW]}[PROMPT]${UI[NC]} Remove global configuration file? (~/.git-trident-config) [y/N]: "
-        read -r response
-        if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        local remove_config="n"
+        if [ -t 0 ]; then
+            echo -e -n "${UI[YELLOW]}[PROMPT]${UI[NC]} Remove global configuration file? (~/.git-trident-config) [y/N]: "
+            read -r response
+            remove_config="$response"
+        fi
+
+        if [[ "$remove_config" =~ ^([yY][eE][sS]|[yY])$ ]]; then
             rm -f "$global_config"
             log_info "✓ Global configuration removed."
         else
@@ -310,24 +310,7 @@ run_install() {
     rm -f "${profile}.bak" 2>/dev/null || true
     echo -e "\n# Git Trident - Added $(date +%Y-%m-%d)\nexport PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$profile"
 
-    # 5. Hook Installation Option
-    echo -e "\n${UI[BLUE]}⚓ HOOK CONFIGURATION${UI[NC]}"
-    echo -e "=========================================="
-    echo -e -n "${UI[YELLOW]}[PROMPT]${UI[NC]} Would you like to install Git Trident hooks globally now? [y/N]: "
-    read -r hook_response
-    if [[ "$hook_response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-        log_info "Installing global hooks..."
-        if "$INSTALL_DIR/bin/git-trident-hooks" install-global; then
-            log_info "✓ Global hooks installed successfully."
-            log_info "💡 Note: Hooks are DISABLED by default. Run 'git trident hooks enable' to activate."
-        else
-            log_warn "⚠️  Hook installation returned an error. You can run it manually later."
-        fi
-    else
-        log_info "Hook installation skipped. You can run 'git trident hooks help' later."
-    fi
-
-    # 6. Verification
+    # 5. Verification
     log_empty
     log_step "Finalizing..."
     export PATH="$INSTALL_DIR/bin:$PATH"
