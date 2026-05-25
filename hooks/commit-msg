@@ -1,0 +1,369 @@
+#!/bin/bash
+# Git Trident - Commit Message Hook
+# Validates commit messages based on git-trident-config
+# Format: [platform] prefix: #123 Description
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOOLS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# =============================================================================
+# LOAD SHARED UTILITIES
+# =============================================================================
+
+# Load shared hook utilities
+if [[ -f "$TOOLS_DIR/lib/git-trident-hooks.sh" ]]; then
+    source "$TOOLS_DIR/lib/git-trident-hooks.sh"
+else
+    echo "❌ Git Trident Hooks not found. Please install git-trident." >&2
+    exit 1
+fi
+
+# =============================================================================
+# COMMIT-SPECIFIC UTILITIES
+# =============================================================================
+
+# Check for multiple prefixes in a line
+check_multiple_prefixes() {
+    local line="$1"
+    local prefix_count=0
+
+    for prefix in "${COMMIT_PREFIX_ARRAY[@]}"; do
+        # Count occurrences of each prefix
+        local occurrences=$(echo "$line" | grep -o "$prefix" | wc -l)
+        prefix_count=$((prefix_count + occurrences))
+    done
+
+    echo "$prefix_count"
+}
+
+# Validate single line structure
+validate_commit_line_structure() {
+    local line="$1"
+    local line_number="$2"
+    local errors=""
+
+    # Check for multiple prefixes in same line
+    local prefix_count=$(check_multiple_prefixes "$line")
+    if [[ $prefix_count -gt 1 ]]; then
+        errors+="Line $line_number: Multiple commit prefixes detected\n"
+        errors+="  A single commit line should have only ONE prefix\n"
+        echo -e "$errors"
+        return
+    fi
+
+    # Find matching prefix and verify exact strict spacing
+    local found_prefix=""
+    local prefix_key=""
+
+    for prefix in "${COMMIT_PREFIX_ARRAY[@]}"; do
+        if [[ "$line" =~ ^$prefix ]]; then
+            found_prefix="$prefix"
+            prefix_key=$(echo "$prefix" | sed 's/:$//')
+            break
+        fi
+    done
+
+    if [[ -z "$found_prefix" ]]; then
+        errors+="Line $line_number: Missing or invalid commit prefix\n  Valid prefixes: $(get_valid_commit_prefixes)\n"
+        echo -e "$errors"
+        return
+    fi
+    
+    # Check exact spacing using bash standard regex class
+    if [[ ! "$line" =~ ^${found_prefix}[[:space:]] ]]; then
+        errors+="Line $line_number: Invalid spacing\n  Expected exactly ONE space after '$found_prefix'\n"
+        echo -e "$errors"
+        return
+    fi
+
+    local line_after_prefix="${line#"$found_prefix" }"
+
+    # Check for optional PR number
+    if [[ "$line_after_prefix" =~ ^#[0-9]+ ]]; then
+        line_after_prefix=$(echo "$line_after_prefix" | sed 's/^#[0-9]*[[:space:]]*//')
+    fi
+
+    # Now validate the description
+    if [[ -z "$line_after_prefix" ]] || [[ "$line_after_prefix" =~ ^[[:space:]]*$ ]]; then
+        errors+="Line $line_number: Commit description cannot be empty\n"
+    else
+        # Optional [fileName] check
+        local description_for_capital_check="$line_after_prefix"
+        if [[ "$description_for_capital_check" =~ ^\[[^]]+\][[:space:]]* ]]; then
+            description_for_capital_check=$(echo "$description_for_capital_check" | sed 's/^\[[^]]*\][[:space:]]*//')
+        fi
+        
+        # Capital letter check
+        if [[ "${REQUIRE_CAPITAL_START:-true}" == "true" ]] && [[ "$prefix_key" != "cmd" ]]; then
+            local first_char="${description_for_capital_check:0:1}"
+            if [[ ! "$first_char" =~ [A-Z] ]]; then
+                errors+="Line $line_number: Description must start with capital letter\n"
+            fi
+        fi
+
+        # Word count check (treats [fileName] as a word if present)
+        local word_count=$(count_words "$line_after_prefix")
+        local min_words="${MIN_WORD_COUNT:-3}"
+        if [[ "$prefix_key" == "cmd" ]]; then
+            min_words="${CMD_MIN_WORD_COUNT:-2}"
+        fi
+
+        if [[ $word_count -lt $min_words ]]; then
+            errors+="Line $line_number: Description too short: $word_count words (minimum $min_words)\n"
+        fi
+    fi
+
+    echo -e "$errors"
+}
+
+# Validate a single line in platform mode
+validate_platform_commit_line() {
+    local line="$1"
+    local line_number="$2"
+    local errors=""
+
+    # Extract platform
+    local platform=$(extract_platform_from_brackets "$line")
+
+    if [[ -z "$platform" ]]; then
+        errors+="Line $line_number: Missing platform prefix\n  Expected: [platform] prefix: description\n"
+    elif ! validate_platform "$platform"; then
+        errors+="Line $line_number: Invalid platform '$platform'\n  Supported Platforms: $PLATFORMS"
+    elif [[ ! "$line" =~ ^\[$platform\][[:space:]] ]]; then
+        errors+="Line $line_number: Invalid spacing\n  Expected exactly ONE space after '[$platform]'\n"
+    else
+        local line_without_platform="${line#\["$platform"\] }"
+        local structure_errors=$(validate_commit_line_structure "$line_without_platform" "$line_number")
+        if [[ -n "$structure_errors" ]]; then
+            errors+="$structure_errors"
+        fi
+    fi
+
+    echo -e "$errors"
+}
+
+# Validate a single line in legacy mode
+validate_legacy_commit_line() {
+    local line="$1"
+    local line_number="$2"
+
+    if [[ "$line" =~ ^[[:space:]] ]]; then
+        echo -e "Line $line_number: Invalid leading space\n  Commit message must not start with a space"
+        return
+    fi
+    local structure_errors=$(validate_commit_line_structure "$line" "$line_number")
+    echo -e "$structure_errors"
+}
+
+# Validate multi-line commit
+validate_multi_line_commit() {
+    local commit_msg="$1"
+    local errors=()
+    local line_number=0
+
+    # Read each non-empty line
+    while IFS= read -r line; do
+        line_number=$((line_number + 1))
+
+        # Skip empty lines
+        if [[ -z "$(trim_string "$line")" ]]; then
+            continue
+        fi
+
+        log_debug "Validating line $line_number: '$line'"
+
+        # Each line must follow the same rules
+        if is_platform_specific_mode; then
+            local line_errors=$(validate_platform_commit_line "$line" "$line_number")
+        else
+            local line_errors=$(validate_legacy_commit_line "$line" "$line_number")
+        fi
+
+        if [[ -n "$line_errors" ]]; then
+            errors+=("$line_errors")
+        fi
+    done <<< "$commit_msg"
+
+    if [[ ${#errors[@]} -gt 0 ]]; then
+        display_multi_line_errors "${errors[@]}"
+        return 1
+    fi
+
+    log_debug "✓ Multi-line commit validation passed"
+    return 0
+}
+
+# Display multi-line errors
+display_multi_line_errors() {
+    local errors=("$@")
+
+    log_error "❌ Invalid multi-line commit message"
+    log_empty "-------------------"
+
+    for error in "${errors[@]}"; do
+        while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                log_empty "$line"
+            fi
+        done <<< "$error"
+    done
+
+    log_empty "-------------------"
+    if is_platform_specific_mode; then
+        log_empty "📝 Format: [platform] prefix: description"
+    else
+        log_empty "📝 Format: prefix: description"
+    fi
+}
+
+# Display commit validation errors
+display_commit_validation_errors() {
+    local errors=("$@")
+
+    log_error "❌ Invalid commit message"
+    log_empty "-------------------"
+
+    for error in "${errors[@]}"; do
+        while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                log_empty "$line"
+            fi
+        done <<< "$error"
+    done
+
+    log_empty "-------------------"
+    if is_platform_specific_mode; then
+        log_empty "📝 Format: [platform] prefix: description"
+        log_empty "   Example: [android] feat: Add login feature"
+    else
+        log_empty "📝 Format: prefix: description"
+        log_empty "   Example: feat: Add login feature"
+    fi
+}
+
+# =============================================================================
+# MAIN VALIDATION FUNCTION
+# =============================================================================
+
+# Main commit message validation entry point
+validate_commit_message() {
+    local commit_file="${1:-}"
+    local commit_msg=""
+
+    # Read commit message from file
+    if [[ -n "$commit_file" ]] && [[ -f "$commit_file" ]]; then
+        commit_msg=$(cat "$commit_file")
+    else
+        log_error "No commit message file provided"
+        return 1
+    fi
+
+    # Skip tool-generated commits completely
+    if [[ "$commit_msg" =~ ^\[flow\]:[[:space:]] ]]; then
+        log_debug "✓ Tool-generated commit automatically accepted"
+        return 0
+    fi
+
+    # Skip Merge commits completely
+    if [[ "$commit_msg" =~ ^Merge[[:space:]] ]]; then
+        log_debug "✓ Merge commit automatically accepted"
+        return 0
+    fi
+
+    # Check if this specific hook is enabled
+    # If not, we still return success here, so that local project hooks can run
+    if ! check_hooks_enabled "commit-msg"; then
+        return 0
+    fi
+
+    # Parse commit prefix config
+    if ! parse_commit_prefix_config; then
+        return 1
+    fi
+
+    # Check if multi-line (more than 1 non-empty line)
+    local line_count=0
+    line_count=$(echo "$commit_msg" | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ' || echo "0")
+    if [[ $line_count -gt 1 ]]; then
+        # Multi-line commit - validate each non-empty line
+        validate_multi_line_commit "$commit_msg"
+        return $?
+    else
+        # Single-line commit
+        local subject=$(echo "$commit_msg" | head -n1)
+        validate_single_line_commit "$subject"
+        return $?
+    fi
+}
+
+# Validate single line commit
+validate_single_line_commit() {
+    local subject="$1"
+    local errors
+
+    if is_platform_specific_mode; then
+        errors=$(validate_platform_commit_line "$subject" "1")
+    else
+        errors=$(validate_legacy_commit_line "$subject" "1")
+    fi
+
+    # Display errors if any
+    if [[ -n "$errors" ]]; then
+        # It's already formatted separated by \n, convert to array for display
+        local -a error_array
+        while IFS= read -r err_line; do
+            if [[ -n "$err_line" ]]; then
+                error_array+=("$err_line")
+            fi
+        done <<< "$errors"
+        display_commit_validation_errors "${error_array[@]}"
+        return 1
+    fi
+
+    log_debug "✓ Commit message validation passed"
+    return 0
+}
+
+# =============================================================================
+# HOOK ENTRY POINT
+# =============================================================================
+
+# Main execution
+main() {
+    # Get commit message file (first argument is the temporary commit message file)
+    COMMIT_MSG_FILE="${1:-}"
+
+    if [[ -z "$COMMIT_MSG_FILE" ]] || [[ ! -f "$COMMIT_MSG_FILE" ]]; then
+        log_error "No commit message file provided"
+        log_info "Usage: This hook should be run by git commit"
+        exit 1
+    fi
+
+    # Show hook header for debugging
+    log_debug "Git Trident - Validate Commits"
+
+    # Log some debug info
+    log_debug "   File: $COMMIT_MSG_FILE"
+
+    # Read commit message for debugging
+    COMMIT_MSG_CONTENT=$(cat "$COMMIT_MSG_FILE" | head -5)
+    log_debug "   Message preview: $(echo "$COMMIT_MSG_CONTENT" | head -1 | cut -c1-50)..."
+
+# Run the validation
+    local validation_passed=true
+    if ! validate_commit_message "$COMMIT_MSG_FILE"; then
+        log_debug "✗ Commit message validation failed"
+        exit 1
+    else
+        log_debug "✓ Commit message validation passed"
+    fi
+
+    # Run local chained hook (always executes passing the same args)
+    run_local_project_hook "commit-msg" "$@"
+    local local_status=$?
+
+    exit $local_status
+}
+
+# Run main function
+main "$@"

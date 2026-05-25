@@ -1,0 +1,319 @@
+#!/bin/bash
+# Cleanup/Pruning tool for deprecated staging tags and stale local branches.
+#
+# Subcommands:
+#   prune [tags]          – delete deprecated staging RC tags (local + remote).
+#                           'tags' is the only valid target for prune.
+#   sync [tags|branches]  – sync local state from remote.
+#                           No target (or 'tags'): prune stale local tags.
+#                           'branches': remove local branches whose remote is gone.
+#                           Omitting target runs BOTH tags and branches.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source common utilities
+source "$SCRIPT_DIR/../lib/git-trident-common.sh"
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+
+# =============================================================================
+# LOGIC
+# =============================================================================
+
+prune_staging_tags() {
+    log_info "🔍 Scanning for deprecated staging tags..."
+    
+    # 1. Get all production tags
+    local prod_tags=$(git tag -l "${PRODUCTION_TAG_PREFIX}*")
+    local tags_to_delete=()
+    local versions_cleaned=0
+
+    # 2. Find corresponding staging tags
+    for prod_tag in $prod_tags; do
+        # Extract version from prod tag (e.g. "v1.0.0" -> "1.0.0")
+        local version=${prod_tag#"$PRODUCTION_TAG_PREFIX"}
+        
+        # Look for staging tags for this version (e.g. "staging-1.0.0-rc*")
+        local staging_pattern="${STAGING_TAG_PREFIX}${version}$(get_rc_suffix)*"
+        local staging_matches=$(git tag -l "$staging_pattern")
+        
+        if [ -n "$staging_matches" ]; then
+            for tag in $staging_matches; do
+                tags_to_delete+=("$tag")
+            done
+            versions_cleaned=$((versions_cleaned + 1))
+        fi
+    done
+
+    # 3. Find unpublished staging tags that are older than the latest production version
+    local all_staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*")
+    for staging_tag in $all_staging_tags; do
+        # Skip if already marked for deletion
+        local already_added=false
+        for existing in "${tags_to_delete[@]}"; do
+            if [ "$existing" = "$staging_tag" ]; then
+                already_added=true
+                break
+            fi
+        done
+        
+        if [ "$already_added" = false ]; then
+            local base_version=$(extract_base_version_from_tag "$staging_tag" "$STAGING_TAG_PREFIX")
+            local platform=$(extract_platform_from_version "$base_version")
+            
+            local latest_prod
+            if [ -n "$platform" ]; then
+                latest_prod=$(get_latest_production_tag_for_platform "$platform")
+            else
+                latest_prod=$(get_latest_production_tag)
+            fi
+            
+            if [ -n "$latest_prod" ]; then
+                # Check if latest_prod is logically greater than the base_version
+                if is_version_greater "$latest_prod" "$base_version"; then
+                    tags_to_delete+=("$staging_tag")
+                fi
+            fi
+        fi
+    done
+
+    # 4. Report findings
+    local count=${#tags_to_delete[@]}
+    if [ "$count" -eq 0 ]; then
+        log_info "✅ No deprecated staging tags found."
+        log_info "   (All staging tags refer to versions not yet in production and are not older than production)"
+        return 0
+    fi
+
+    log_info "Found $count deprecated staging tags."
+    log_info "These tags correspond to versions that are already released or are older than the latest production release."
+    echo ""
+    
+    # Show first 10
+    local shown=0
+    for tag in "${tags_to_delete[@]}"; do
+        echo "   • $tag"
+        shown=$((shown + 1))
+        if [ "$shown" -ge 10 ]; then
+            echo "   ... and $((count - 10)) more"
+            break
+        fi
+    done
+    echo ""
+
+    # 4. Confirm Deletion
+    if confirm_action "Delete these $count tags from LOCAL and REMOTE ($REMOTE)?"; then
+        log_info "🗑️  Deleting tags..."
+        
+        # Batch delete local
+        # xargs is safer for large numbers of tags
+        printf "%s\n" "${tags_to_delete[@]}" | xargs git tag -d >/dev/null 2>&1
+        log_info "✓ Deleted $count local tags"
+
+        # Batch delete remote
+        log_info "⏳ Deleting remote tags (this may take a moment)..."
+        # Git push --delete accepts multiple tags. We need to batch them to avoid command line length limits
+        # Batch size of 20 seems safe
+        local batch=()
+        for tag in "${tags_to_delete[@]}"; do
+            batch+=("$tag")
+            if [ "${#batch[@]}" -ge 20 ]; then
+                git push "$REMOTE" --delete "${batch[@]}" >/dev/null 2>&1
+                batch=()
+                echo -n "."
+            fi
+        done
+        # Process remaining
+        if [ "${#batch[@]}" -gt 0 ]; then
+            git push "$REMOTE" --delete "${batch[@]}" >/dev/null 2>&1
+        fi
+        echo ""
+        log_info "✓ Deleted remote tags"
+        
+        log_info "🎉 Cleanup complete!"
+        log_warn "📢 Tell your teammates to run: 'git trident cleanup sync'"
+    else
+        log_info "Operation cancelled."
+    fi
+}
+
+sync_local_tags() {
+    log_info "🔄 SYNCING TAGS FROM REMOTE '$REMOTE'"
+    log_info "This will prune local tags that no longer exist on the remote."
+    log_empty
+    
+    # Check remote connectivity first
+    if ! git ls-remote "$REMOTE" > /dev/null 2>&1; then
+        log_error "Cannot reach remote '$REMOTE'"
+        exit 1
+    fi
+
+    # Run fetch with prune-tags
+    # --prune-tags: remove local tags that don't exist on remote
+    # --force: force update tags
+    if git fetch --prune --prune-tags --force "$REMOTE"; then
+        log_info "✅ Local tags synchronized."
+        log_info "   - Deleted local tags that were removed from remote."
+        log_info "   - Updated existing tags."
+    else
+        log_error "Failed to sync tags."
+        exit 1
+    fi
+}
+
+sync_local_branches() {
+    log_info "🌿 SYNCING LOCAL BRANCHES FROM REMOTE '$REMOTE'"
+    log_info "This will remove any local tracking branches that no longer exist on the remote."
+    log_empty
+
+    # Check remote connectivity first
+    if ! git ls-remote "$REMOTE" > /dev/null 2>&1; then
+        log_error "Cannot reach remote '$REMOTE'"
+        exit 1
+    fi
+
+    # Fetch + prune remote-tracking refs so git knows which remotes are gone
+    log_info "⏳ Fetching remote to refresh tracking info..."
+    if ! git fetch --prune "$REMOTE" > /dev/null 2>&1; then
+        log_error "Failed to fetch from remote '$REMOTE'."
+        exit 1
+    fi
+
+    # Collect protected branches (never delete these)
+    local protected=("$PRODUCTION_BRANCH" "$STAGING_BRANCH" "$DEVELOP_BRANCH")
+    local current_branch
+    current_branch=$(git branch --show-current 2>/dev/null || git symbolic-ref --short HEAD 2>/dev/null)
+
+    # Find local branches whose upstream tracking ref is gone
+    local -a stale_branches=()
+    while IFS= read -r line; do
+        # 'git branch -vv' marks stale branches as [remote/branch: gone]
+        # Extract branch name from lines like: "  feature/foo abc1234 [origin/feature/foo: gone] commit msg"
+        local branch_name
+        branch_name=$(echo "$line" | awk '{print $1}' | sed 's/^\* //')
+
+        # Skip empty, HEAD, or current branch
+        [[ -z "$branch_name" || "$branch_name" == "HEAD" ]] && continue
+
+        # Skip protected branches
+        local is_protected=false
+        for p in "${protected[@]}"; do
+            if [[ "$branch_name" == "$p" ]]; then
+                is_protected=true
+                break
+            fi
+        done
+        [[ "$is_protected" == "true" ]] && continue
+
+        # Skip the currently checked-out branch
+        [[ "$branch_name" == "$current_branch" ]] && continue
+
+        stale_branches+=("$branch_name")
+    done < <(git branch -vv | grep ': gone]')
+
+    if [[ ${#stale_branches[@]} -eq 0 ]]; then
+        log_info "✅ No stale local branches found. All local branches have a live remote counterpart."
+        return 0
+    fi
+
+    log_info "Found ${#stale_branches[@]} local branch(es) whose remote tracking ref is gone:"
+    echo ""
+    for b in "${stale_branches[@]}"; do
+        echo "   • $b"
+    done
+    echo ""
+
+    if confirm_action "Delete these ${#stale_branches[@]} stale local branch(es)?"; then
+        local deleted=0
+        local failed=0
+        for b in "${stale_branches[@]}"; do
+            if git branch -d "$b" > /dev/null 2>&1; then
+                log_info "   ✓ Deleted: $b"
+                deleted=$((deleted + 1))
+            else
+                # Try force-delete if not fully merged
+                if confirm_action "   Branch '$b' is not fully merged. Force-delete it?"; then
+                    if git branch -D "$b" > /dev/null 2>&1; then
+                        log_info "   ✓ Force-deleted: $b"
+                        deleted=$((deleted + 1))
+                    else
+                        log_warn "   ✗ Failed to delete: $b"
+                        failed=$((failed + 1))
+                    fi
+                else
+                    log_info "   - Skipped: $b"
+                    failed=$((failed + 1))
+                fi
+            fi
+        done
+        echo ""
+        log_info "🎉 Branch sync complete! Deleted: $deleted  Skipped/failed: $failed"
+    else
+        log_info "Operation cancelled."
+    fi
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    local subcommand="${1:-}"
+    shift || true
+    local target="${1:-}"
+
+    case "$subcommand" in
+        "prune"|"start")
+            # target must be empty or 'tags' (the only meaningful prune target)
+            if [[ -n "$target" && "$target" != "tags" ]]; then
+                log_error "'prune' only supports the 'tags' target (or no target)."
+                log_error "Usage: git trident cleanup prune [tags]"
+                exit 1
+            fi
+            prune_staging_tags
+            ;;
+        "sync")
+            case "${target:-both}" in
+                "tags")
+                    sync_local_tags
+                    ;;
+                "branches")
+                    sync_local_branches
+                    ;;
+                "both"|"")
+                    log_info "🔄 FULL SYNC: tags + branches"
+                    log_empty
+                    sync_local_tags
+                    echo ""
+                    sync_local_branches
+                    ;;
+                *)
+                    log_error "Unknown target '$target'. Use: tags | branches  (or omit for both)"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        "--help"|"-h"|"help")
+            if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
+                source "$SCRIPT_DIR/../lib/git-trident-help.sh"
+                show_cleanup_help
+            else
+                log_error "Help module not found."
+            fi
+            ;;
+        "")
+            log_error "Usage: git trident cleanup <subcommand> [target]"
+            log_error "  prune [tags]          – delete deprecated staging RC tags"
+            log_error "  sync [tags|branches]  – sync tags/branches from remote"
+            log_error ""
+            log_error "Run 'git trident cleanup --help' for details."
+            exit 1
+            ;;
+        *)
+            log_error "Unknown subcommand: $subcommand"
+            log_error "Usage: git trident cleanup prune [tags] | sync [tags|branches]"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

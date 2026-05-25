@@ -1,0 +1,1060 @@
+#!/bin/bash
+# Push all local changes to remote after manual review - Multi-platform support with classification
+# Optimized with enhanced platform propagation analysis and safety checks
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source common utilities
+source "$SCRIPT_DIR/../lib/git-trident-common.sh"
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+
+# =============================================================================
+# PLATFORM ANALYSIS UTILITIES (OPTIMIZED)
+# =============================================================================
+
+# Enhanced platform tag detection with propagation impact analysis
+tag_belongs_to_platform() {
+    local tag="$1"
+    local platform="$2"
+
+    # Fast path: exact pattern matching
+    if [[ "$tag" == "${STAGING_TAG_PREFIX}${platform}-"* ]] && [[ "$tag" =~ ^${STAGING_TAG_PREFIX}${platform}-[0-9] ]]; then
+        return 0
+    fi
+
+    if [[ "$tag" == "${PRODUCTION_TAG_PREFIX}${platform}-"* ]] && [[ "$tag" =~ ^${PRODUCTION_TAG_PREFIX}${platform}-[0-9] ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Analyze propagation impact of a tag
+analyze_tag_propagation_impact() {
+    local tag="$1"
+
+    # Strip prefix to get clean version
+    local clean_tag=""
+    local tag_type=""
+
+    if [[ "$tag" == "${STAGING_TAG_PREFIX}"* ]]; then
+        clean_tag="${tag#"${STAGING_TAG_PREFIX}"}"
+        tag_type="staging"
+    elif [[ "$tag" == "${PRODUCTION_TAG_PREFIX}"* ]]; then
+        clean_tag="${tag#"${PRODUCTION_TAG_PREFIX}"}"
+        tag_type="production"
+    else
+        echo "unknown:unknown:0:unknown:unknown"
+        return
+    fi
+
+    # Extract platform and base version using version utils
+    local platform=$(extract_platform_from_version "$clean_tag")
+    local platform_type=$(get_platform_type_from_version "$clean_tag")
+
+    if [ -z "$platform" ] || [ -z "$platform_type" ]; then
+        echo "unknown:unknown:0:unknown:$tag_type"
+        return
+    fi
+
+    # Determine impact level based on platform type
+    local impact_level=0
+    local impact_description=""
+    local impact_emoji=""
+
+    case "$platform_type" in
+        "common")
+            impact_level=3  # High impact - affects all independent platforms
+            impact_description="affects all independent platforms"
+            impact_emoji="⚡"
+            ;;
+        "independent")
+            impact_level=1  # Low impact - only affects same platform
+            impact_description="affects only $platform platform"
+            impact_emoji="📍"
+            ;;
+        *)
+            impact_level=0
+            impact_description="unknown impact"
+            impact_emoji="❓"
+            ;;
+    esac
+
+    echo "${platform}:${platform_type}:${impact_level}:${impact_description}:${tag_type}:${impact_emoji}"
+}
+
+# Get visual representation of platform type
+get_platform_type_display() {
+    local platform="$1"
+
+    if ! is_platform_specific_mode; then
+        echo ""
+        return
+    fi
+
+    local platform_type=$(get_platform_type "$platform")
+    case "$platform_type" in
+        "common") echo " ⚡" ;;      # High impact symbol
+        "independent") echo " 📱" ;; # Platform-specific symbol
+        *) echo "" ;;
+    esac
+}
+
+# Get propagation info for display
+get_propagation_info_for_display() {
+    local platform="$1"
+
+    if ! is_platform_specific_mode; then
+        echo ""
+        return
+    fi
+
+    local platform_type=$(get_platform_type "$platform")
+
+    case "$platform_type" in
+        "common")
+            echo " → $INDEPENDENT_PLATFORMS"  # Shows where it propagates to
+            ;;
+        "independent")
+            echo " → self only"  # Shows isolation
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# =============================================================================
+# SAFETY AND VALIDATION CHECKS
+# =============================================================================
+
+# Check for deprecated tags before pushing
+check_deprecated_tags_before_push() {
+    local tags="$1"
+    local has_deprecated=false
+
+    for tag in $tags; do
+        # Only check staging tags (production tags can't be deprecated)
+        if [[ "$tag" == "${STAGING_TAG_PREFIX}"* ]]; then
+            local clean_version=$(echo "$tag" | sed "s|^${STAGING_TAG_PREFIX}||")
+            local base_version=$(extract_base_version "$clean_version")
+
+            # Build corresponding production tag
+            local prod_tag=""
+            if is_platform_specific_mode; then
+                local platform=$(extract_platform_from_version "$clean_version")
+                if [ -n "$platform" ]; then
+                    prod_tag="${PRODUCTION_TAG_PREFIX}${platform}-${base_version}"
+                else
+                    prod_tag="${PRODUCTION_TAG_PREFIX}${base_version}"
+                fi
+            else
+                prod_tag="${PRODUCTION_TAG_PREFIX}${base_version}"
+            fi
+
+            # Check if production tag exists
+            if git rev-parse "$prod_tag" >/dev/null 2>&1; then
+                if [ "$has_deprecated" = false ]; then
+                    log_warn "⚠️  DEPRECATED TAGS DETECTED:"
+                    has_deprecated=true
+                fi
+                log_warn "   • $tag → $prod_tag (already in production)"
+            fi
+        fi
+    done
+
+    if [ "$has_deprecated" = true ]; then
+        log_empty ""
+        log_warn "Deprecated staging tags should NOT be promoted to production!"
+        log_warn "These tags are based on commits before production release."
+
+        if ! confirm_action "Continue pushing despite deprecated tags?"; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Check impact of common platform changes
+check_common_platform_impact() {
+    local tags="$1"
+    local platform="$2"
+
+    if ! is_platform_specific_mode; then
+        return 0
+    fi
+
+    local platform_type=$(get_platform_type "$platform")
+
+    if [ "$platform_type" = "common" ]; then
+        # Count common platform tags
+        local common_tag_count=0
+        for tag in $tags; do
+            if tag_belongs_to_platform "$tag" "$platform"; then
+                common_tag_count=$((common_tag_count + 1))
+            fi
+        done
+
+        if [ "$common_tag_count" -gt 0 ]; then
+            log_warn "📢 COMMON PLATFORM CHANGES DETECTED"
+            log_info "   Platform: $platform (⚡ High Impact)"
+            log_info "   Tags affected: $common_tag_count"
+            log_info "   Propagation: → $INDEPENDENT_PLATFORMS"
+            log_empty ""
+            log_info "   ⚠️  These changes will trigger sync in dependent platforms"
+
+            if ! confirm_action "Continue pushing common platform changes?"; then
+                return 1
+            fi
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# CACHE MANAGEMENT (OPTIMIZED)
+# =============================================================================
+
+# Get cached remote tags with platform filtering
+get_cached_remote_tags() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+    local cache_file=".git/git-trident-remote-tags-$remote"
+    local cache_age="${REMOTE_TAG_CACHE_DURATION:-300}"
+
+    # Platform-specific cache file
+    if [ -n "$platform_filter" ]; then
+        cache_file="$cache_file-$platform_filter"
+    fi
+
+    # Check cache validity
+    if [ -f "$cache_file" ]; then
+        local file_age=$(get_file_age "$cache_file")
+
+        if [ "$file_age" -lt "$cache_age" ]; then
+            log_debug "Using cached remote tags (age: ${file_age}s)"
+            cat "$cache_file"
+            return 0
+        fi
+        log_debug "Cache expired (age: ${file_age}s), refreshing..."
+    fi
+
+    # Fetch fresh remote tags (only Git Trident tags for efficiency)
+    log_debug "Fetching remote tags from $remote..."
+    local remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null | \
+        grep -E "(refs/tags/${STAGING_TAG_PREFIX}|refs/tags/${PRODUCTION_TAG_PREFIX})" | \
+        cut -f2 | \
+        sed 's|refs/tags/||')
+
+    # Apply platform filter if specified
+    if [ -n "$platform_filter" ]; then
+        local filtered_tags=""
+        for tag in $remote_tags; do
+            if tag_belongs_to_platform "$tag" "$platform_filter"; then
+                filtered_tags="${filtered_tags}${tag}"$'\n'
+            fi
+        done
+        remote_tags=$(echo "$filtered_tags" | sed '/^$/d')
+    fi
+
+    # Cache results
+    echo "$remote_tags" > "$cache_file"
+    echo "$remote_tags"
+}
+
+# Clear cache with platform awareness
+clear_remote_tag_cache() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+
+    if [ -n "$platform_filter" ]; then
+        local cache_file=".git/git-trident-remote-tags-$remote-$platform_filter"
+        if [ -f "$cache_file" ]; then
+            rm -f "$cache_file"
+            log_debug "Cleared platform-specific cache: $cache_file"
+        fi
+    else
+        # Clear all cache files for this remote
+        local cache_pattern=".git/git-trident-remote-tags-$remote*"
+        if ls "$cache_pattern" 2>/dev/null >/dev/null; then
+            rm -f "$cache_pattern"
+            log_debug "Cleared all cache files for remote: $remote"
+        fi
+    fi
+}
+
+# =============================================================================
+# TAG DETECTION (OPTIMIZED WITH COMM)
+# =============================================================================
+
+# Get unpushed tags with platform filtering
+get_unpushed_tags() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+
+    # Get local tags (filtered if platform specified)
+    local local_tags
+    if [ -n "$platform_filter" ] && is_platform_specific_mode; then
+        # Efficient platform filtering
+        local_tags=$(git tag -l | grep -E "^(${STAGING_TAG_PREFIX}${platform_filter}-|${PRODUCTION_TAG_PREFIX}${platform_filter}-)")
+    else
+        # All Git Trident tags
+        local_tags=$(git tag -l | grep -E "^(${STAGING_TAG_PREFIX}|${PRODUCTION_TAG_PREFIX})")
+    fi
+
+    # Get remote tags (cached)
+    local remote_tags
+    remote_tags=$(get_cached_remote_tags "$remote" "$platform_filter")
+
+    # Use comm for efficient comparison (requires sorted input)
+    local unpushed_tags=$(comm -13 <(echo "$remote_tags" | sort) <(echo "$local_tags" | sort))
+
+    echo "$unpushed_tags"
+}
+
+# =============================================================================
+# BRANCH STATUS (OPTIMIZED)
+# =============================================================================
+
+# Get push status for a branch
+get_branch_push_status() {
+    local branch="$1"
+    local remote="$2"
+
+    # Quick local existence check
+    if ! check_branch_exists "$branch"; then
+        echo "no_local"
+        return
+    fi
+
+    # Check remote existence
+    if ! git ls-remote --heads "$remote" "$branch" >/dev/null 2>&1; then
+        echo "new_branch"
+        return
+    fi
+
+    # Check for unpushed commits (optimized count)
+    local unpushed_count
+    unpushed_count=$(git rev-list --count "$remote/$branch..$branch" 2>/dev/null || echo "0")
+
+    if [ "$unpushed_count" -gt 0 ]; then
+        echo "has_changes"
+    else
+        echo "up_to_date"
+    fi
+}
+
+# =============================================================================
+# DISPLAY FUNCTIONS (ENHANCED)
+# =============================================================================
+
+# Show platform information header
+show_platform_header() {
+    if is_platform_specific_mode; then
+        log_info "🌐  PLATFORM-SPECIFIC MODE"
+        log_info "   All platforms: $PLATFORMS"
+
+        if [ -n "$COMMON_PLATFORMS" ] && [ -n "$INDEPENDENT_PLATFORMS" ]; then
+            log_info "   Common platforms: $COMMON_PLATFORMS ⚡"
+            log_info "   Independent platforms: $INDEPENDENT_PLATFORMS 📱"
+            log_empty ""
+            log_info "   Propagation Rules:"
+            log_info "     • Common → Independent: ⚡ Always propagate"
+            log_info "     • Independent → Other: 📱 Never cross-propagate"
+            log_info "     • Independent → Common: ❌ Never propagate"
+        fi
+        log_empty ""
+    fi
+}
+
+# Show pending changes with platform analysis
+show_pending_changes() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+    local max_commits="${3:-5}"
+
+    log_info "📦 PENDING CHANGES TO PUSH"
+    log_info "=========================================="
+    log_empty ""
+
+    # Platform header
+    show_platform_header
+
+    # Platform filter info
+    if [ -n "$platform_filter" ] && is_platform_specific_mode; then
+        local platform_type_display=$(get_platform_type_display "$platform_filter")
+        local propagation_info=$(get_propagation_info_for_display "$platform_filter")
+        log_info "🔍 PLATFORM FILTER: $platform_filter$platform_type_display"
+        log_info "   Propagation: $propagation_info"
+        log_empty ""
+    fi
+
+    # Branch changes
+    local has_branch_changes=false
+    local branches=("$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH")
+
+    for branch in "${branches[@]}"; do
+        local push_status=$(get_branch_push_status "$branch" "$remote")
+
+        case "$push_status" in
+            "has_changes")
+                has_branch_changes=true
+                local range_spec="$remote/$branch..$branch"
+                local commit_count=$(git_log_count "$range_spec")
+
+                # Branch icon based on type
+                local branch_icon="🌿"
+                [[ "$branch" == "$STAGING_BRANCH" ]] && branch_icon="🚧"
+                [[ "$branch" == "$PRODUCTION_BRANCH" ]] && branch_icon="🚀"
+
+                log_info "$branch_icon $branch: $commit_count new commit(s)"
+
+                if [ "$commit_count" -gt 0 ]; then
+                    # Show commit preview
+                    if [ "$commit_count" -le "$max_commits" ]; then
+                        git_log_formatted "$range_spec" "$max_commits"
+                    else
+                        git_log_formatted "$range_spec" "$max_commits"
+                        log_info "... and $((commit_count - max_commits)) more commit(s)"
+                    fi
+
+                    # Platform impact analysis for platform-specific mode
+                    if is_platform_specific_mode && [ -z "$platform_filter" ]; then
+                        analyze_branch_platform_impact "$branch" "$range_spec"
+                    fi
+                fi
+                log_empty ""
+                ;;
+
+            "new_branch")
+                has_branch_changes=true
+                local commit_count=$(git_log_count "$branch")
+                log_info "🆕 $branch: NEW BRANCH ($commit_count commit(s))"
+
+                if [ "$commit_count" -gt 0 ]; then
+                    git_log_formatted "$branch" "$max_commits"
+                    if [ "$commit_count" -gt "$max_commits" ]; then
+                        log_info "... and $((commit_count - max_commits)) more commit(s)"
+                    fi
+                fi
+                log_empty ""
+                ;;
+        esac
+    done
+
+    if [ "$has_branch_changes" = false ]; then
+        log_info "📭 No un-pushed branch changes."
+        log_empty ""
+    fi
+
+    # Tag changes
+    local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
+
+    if [ -n "$unpushed_tags" ]; then
+        log_info "🏷️  UN-PUSHED TAGS"
+
+        # Safety check for deprecated tags
+        check_deprecated_tags_before_push "$unpushed_tags"
+
+        if is_platform_specific_mode; then
+            # Enhanced platform grouping with propagation analysis
+            group_tags_with_propagation_analysis "$unpushed_tags"
+        else
+            # Simple list for legacy mode
+            echo "$unpushed_tags" | while read tag; do
+                log_empty "  $tag"
+            done
+        fi
+        log_empty ""
+    else
+        log_info "✅ No un-pushed tags."
+        log_empty ""
+    fi
+}
+
+# Analyze platform impact for branch commits
+analyze_branch_platform_impact() {
+    local branch="$1"
+    local range_spec="$2"
+
+    # Only analyze staging and production branches
+    if [[ "$branch" != "$STAGING_BRANCH" && "$branch" != "$PRODUCTION_BRANCH" ]]; then
+        return
+    fi
+
+    # Get tags created in this range
+    local tags_in_range=$(git log "$range_spec" --pretty=format:"%H" 2>/dev/null | \
+        xargs -I {} git tag --points-to {} 2>/dev/null | \
+        grep -E "^(${STAGING_TAG_PREFIX}|${PRODUCTION_TAG_PREFIX})")
+
+    if [ -z "$tags_in_range" ]; then
+        return
+    fi
+
+    # Initialize platform tracking strings
+    local platform_counts=""
+    local platform_impact_summary=""
+
+    # Process each tag
+    while IFS= read -r tag; do
+        local analysis=$(analyze_tag_propagation_impact "$tag")
+        IFS=':' read -r platform platform_type impact_level impact_description tag_type impact_emoji <<< "$analysis"
+
+        if [ "$platform" != "unknown" ]; then
+            # Update platform count
+            local current_count=$(echo "$platform_counts" | grep -o "$platform:[0-9]*" | cut -d: -f2)
+            if [ -z "$current_count" ]; then
+                current_count=0
+                platform_counts="$platform_counts $platform:1"
+            else
+                local new_count=$((current_count + 1))
+                platform_counts=$(echo "$platform_counts" | sed "s/$platform:$current_count/$platform:$new_count/")
+            fi
+
+            # Store impact summary
+            if ! echo "$platform_impact_summary" | grep -q "$platform:"; then
+                platform_impact_summary="$platform_impact_summary $platform:$impact_emoji$platform_type"
+            fi
+        fi
+    done <<< "$tags_in_range"
+
+    # Build summary string
+    local summary=""
+    for platform in $PLATFORMS; do
+        local count=$(echo "$platform_counts" | grep -o "$platform:[0-9]*" | cut -d: -f2)
+        if [ -n "$count" ] && [ "$count" -gt 0 ]; then
+            local impact_info=$(echo "$platform_impact_summary" | grep -o "$platform:[^ ]*" | cut -d: -f2)
+            summary="$summary $impact_info($count)"
+        fi
+    done
+
+    if [ -n "$summary" ]; then
+        log_info "   📊 Platform impact:$summary"
+    fi
+}
+
+# Group tags with propagation analysis
+group_tags_with_propagation_analysis() {
+    local tags="$1"
+
+    # Initialize string-based storage
+    local high_impact_tags=""
+    local low_impact_tags=""
+    local unknown_tags=""
+
+    # Process each tag
+    while IFS= read -r tag; do
+        local analysis=$(analyze_tag_propagation_impact "$tag")
+        IFS=':' read -r platform platform_type impact_level impact_description tag_type impact_emoji <<< "$analysis"
+
+        # Format tag display
+        local tag_icon="📦"
+        [[ "$tag_type" == "production" ]] && tag_icon="🚀"
+        local tag_display="$tag_icon $tag $impact_emoji($impact_description)"
+
+        # Categorize by impact
+        case "$impact_level" in
+            3)
+                high_impact_tags="${high_impact_tags}${tag_display}"$'\n'
+                ;;
+            1)
+                low_impact_tags="${low_impact_tags}${tag_display}"$'\n'
+                ;;
+            *)
+                unknown_tags="${unknown_tags}${tag_display}"$'\n'
+                ;;
+        esac
+    done <<< "$tags"
+
+    # Display by impact category
+    if [ -n "$high_impact_tags" ]; then
+        log_empty "  ⚡ HIGH IMPACT (Common Platforms):"
+        echo "$high_impact_tags" | sed '/^$/d' | while read line; do
+            log_empty "    $line"
+        done
+        log_empty ""
+    fi
+
+    if [ -n "$low_impact_tags" ]; then
+        log_empty "  📍 LOW IMPACT (Independent Platforms):"
+        echo "$low_impact_tags" | sed '/^$/d' | while read line; do
+            log_empty "    $line"
+        done
+        log_empty ""
+    fi
+
+    if [ -n "$unknown_tags" ]; then
+        log_empty "  ❓ UNKNOWN/OTHER:"
+        echo "$unknown_tags" | sed '/^$/d' | while read line; do
+            log_empty "    $line"
+        done
+    fi
+}
+
+# =============================================================================
+# PUSH SUMMARY (ENHANCED)
+# =============================================================================
+
+show_push_summary() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+    local total_changes=0
+
+    log_info "📊 PUSH SUMMARY"
+    log_info "=========================================="
+    log_empty ""
+
+    # Platform filter info
+    if [ -n "$platform_filter" ] && is_platform_specific_mode; then
+        local platform_type_display=$(get_platform_type_display "$platform_filter")
+        local propagation_info=$(get_propagation_info_for_display "$platform_filter")
+        log_info "🔍 FILTERED TO: $platform_filter$platform_type_display"
+        log_info "   Propagation: $propagation_info"
+        log_empty ""
+    fi
+
+    # Branch analysis
+    log_info "🌿 BRANCH ANALYSIS:"
+    local branch_changes=0
+    local branches=("$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH")
+
+    for branch in "${branches[@]}"; do
+        if check_branch_exists "$branch"; then
+            local push_status=$(get_branch_push_status "$branch" "$remote")
+
+            case "$push_status" in
+                "has_changes")
+                    local commit_count=$(git_log_count "$remote/$branch..$branch")
+                    log_info "  📦 $branch: $commit_count new commit(s)"
+                    branch_changes=$((branch_changes + commit_count))
+                    ;;
+                "new_branch")
+                    local commit_count=$(git rev-list --count "$branch" 2>/dev/null || echo "0")
+                    log_info "  🆕 $branch: NEW BRANCH ($commit_count commit(s))"
+                    branch_changes=$((branch_changes + commit_count))
+                    ;;
+                *)
+                    log_info "  ✅ $branch: up to date"
+                    ;;
+            esac
+        else
+            log_info "  📭 $branch: does not exist locally"
+        fi
+    done
+
+    total_changes=$((total_changes + branch_changes))
+    log_empty ""
+
+    # Tag analysis
+    log_info "🏷️  TAG ANALYSIS:"
+    local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
+    local tag_count=$(echo "$unpushed_tags" | wc -l | tr -d ' ')
+
+    if [ "$tag_count" -gt 0 ]; then
+        log_info "  📦 Tags: $tag_count new tag(s)"
+        total_changes=$((total_changes + tag_count))
+
+        # Check for common platform impact warnings
+        if is_platform_specific_mode && [ -n "$platform_filter" ]; then
+            check_common_platform_impact "$unpushed_tags" "$platform_filter"
+        fi
+
+        # Platform breakdown
+        if is_platform_specific_mode; then
+            show_tag_platform_breakdown "$unpushed_tags"
+        fi
+    else
+        log_info "  ✅ Tags: up to date"
+    fi
+
+    log_empty ""
+    log_info "=========================================="
+    log_info "📈 TOTAL CHANGES: $total_changes"
+
+    if [ "$branch_changes" -gt 0 ]; then
+        log_info "   • Branch commits: $branch_changes"
+    fi
+
+    if [ "$tag_count" -gt 0 ]; then
+        log_info "   • New tags: $tag_count"
+    fi
+
+    # Propagation impact warning
+    if is_platform_specific_mode && [ "$tag_count" -gt 0 ] && [ -z "$platform_filter" ]; then
+        show_propagation_impact_warning "$unpushed_tags"
+    fi
+}
+
+# Show tag platform breakdown
+show_tag_platform_breakdown() {
+    local tags="$1"
+
+    # Use string-based tracking instead of associative arrays
+    local platform_counts_str=""
+    local platform_impact_str=""
+
+    # Initialize strings for each platform
+    for platform in $PLATFORMS; do
+        platform_counts_str="$platform_counts_str:$platform=0"
+        platform_impact_str="$platform_impact_str:$platform=0"
+    done
+
+    local other_count=0
+
+    # Count and analyze
+    while IFS= read -r tag; do
+        local analysis=$(analyze_tag_propagation_impact "$tag")
+        IFS=':' read -r platform platform_type impact_level impact_description tag_type impact_emoji <<< "$analysis"
+
+        if [ "$platform" != "unknown" ]; then
+            # Update platform count
+            local current_count=$(echo "$platform_counts_str" | grep -o ":$platform=[0-9]*" | cut -d= -f2)
+            local new_count=$((current_count + 1))
+            platform_counts_str=$(echo "$platform_counts_str" | sed "s/:$platform=$current_count/:$platform=$new_count/")
+
+            # Update impact total
+            local current_impact=$(echo "$platform_impact_str" | grep -o ":$platform=[0-9]*" | cut -d= -f2)
+            local new_impact=$((current_impact + impact_level))
+            platform_impact_str=$(echo "$platform_impact_str" | sed "s/:$platform=$current_impact/:$platform=$new_impact/")
+        else
+            other_count=$((other_count + 1))
+        fi
+    done <<< "$tags"
+
+    # Display breakdown
+    log_empty ""
+    log_info "  📋 PLATFORM BREAKDOWN:"
+
+    # Process each platform
+    for platform in $PLATFORMS; do
+        local count=$(echo "$platform_counts_str" | grep -o ":$platform=[0-9]*" | cut -d= -f2)
+
+        if [ -n "$count" ] && [ "$count" -gt 0 ]; then
+            local platform_type_display=$(get_platform_type_display "$platform")
+            local propagation_info=$(get_propagation_info_for_display "$platform")
+
+            # Calculate average impact
+            local impact_total=$(echo "$platform_impact_str" | grep -o ":$platform=[0-9]*" | cut -d= -f2)
+            local avg_impact=$((impact_total / count))
+
+            # Impact indicator
+            local impact_indicator=""
+            if [ "$avg_impact" -ge 2 ]; then
+                impact_indicator="⚡"
+            elif [ "$avg_impact" -ge 1 ]; then
+                impact_indicator="📍"
+            fi
+
+            log_info "    $platform$platform_type_display: $count tag(s) $impact_indicator$propagation_info"
+        fi
+    done
+
+    if [ "$other_count" -gt 0 ]; then
+        log_info "    other: $other_count tag(s)"
+    fi
+}
+
+# Show propagation impact warning
+show_propagation_impact_warning() {
+    local tags="$1"
+
+    # Check for common platform tags
+    local common_tag_count=0
+    local common_platforms_list=""
+
+    for platform in $COMMON_PLATFORMS; do
+        local platform_count=0
+        for tag in $tags; do
+            if tag_belongs_to_platform "$tag" "$platform"; then
+                platform_count=$((platform_count + 1))
+            fi
+        done
+
+        if [ "$platform_count" -gt 0 ]; then
+            common_tag_count=$((common_tag_count + platform_count))
+            common_platforms_list="$common_platforms_list$platform($platform_count) "
+        fi
+    done
+
+    if [ "$common_tag_count" -gt 0 ]; then
+        log_empty ""
+        log_warn "⚠️  PROPAGATION IMPACT WARNING"
+        log_info "   Common platform changes detected: $common_platforms_list"
+        log_info "   Total common platform tags: $common_tag_count"
+        log_empty ""
+        log_info "   ⚡ These changes will propagate to:"
+        log_info "     $INDEPENDENT_PLATFORMS"
+        log_empty ""
+        log_info "   This may trigger automatic synchronization operations."
+        log_info "   Ensure changes are tested before pushing."
+    fi
+}
+
+# =============================================================================
+# PUSH OPERATIONS (OPTIMIZED)
+# =============================================================================
+
+push_branch() {
+    local branch="$1"
+    local remote="${2:-$REMOTE}"
+
+    log_step "Pushing $branch to $remote..."
+    if git push "$remote" "$branch" 2>&1 | tee /dev/stderr | grep -q "Everything up-to-date"; then
+        log_info "✅ $branch already up to date"
+        return 0
+    elif git push "$remote" "$branch"; then
+        log_info "✓ $branch pushed successfully"
+        return 0
+    else
+        log_error "Failed to push $branch"
+        return 1
+    fi
+}
+
+push_tags() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+
+    log_step "Pushing tags to $remote..."
+
+    # Get tags to push
+    local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
+    local tag_count=$(echo "$unpushed_tags" | wc -l | tr -d ' ')
+
+    if [ "$tag_count" -eq 0 ]; then
+        log_info "✅ No tags to push"
+        return 0
+    fi
+
+    # Platform-specific push or bulk push
+    if [ -n "$platform_filter" ] && is_platform_specific_mode; then
+        log_info "Pushing $tag_count tag(s) for platform $platform_filter..."
+
+        # Push individually for better error reporting
+        local success_count=0
+        local failed_tags=""
+
+        while IFS= read -r tag; do
+            if git push "$remote" "$tag" 2>/dev/null; then
+                success_count=$((success_count + 1))
+                log_debug "✓ $tag"
+            else
+                failed_tags="$failed_tags $tag"
+                log_error "✗ $tag"
+            fi
+        done <<< "$unpushed_tags"
+
+        if [ -z "$failed_tags" ]; then
+            log_info "✓ All $tag_count tags pushed successfully"
+            clear_remote_tag_cache "$remote" "$platform_filter"
+            return 0
+        else
+            log_error "Failed to push $((tag_count - success_count)) tags:$failed_tags"
+            return 1
+        fi
+    else
+        # Bulk push all tags
+        if git push "$remote" --tags; then
+            log_info "✓ All tags pushed successfully"
+            clear_remote_tag_cache "$remote"
+            return 0
+        else
+            log_error "Failed to push tags"
+            return 1
+        fi
+    fi
+}
+
+# Check if there are any changes to push
+has_any_changes() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+
+    # Check branches
+    local branches=("$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH")
+    for branch in "${branches[@]}"; do
+        if check_branch_exists "$branch"; then
+            local push_status=$(get_branch_push_status "$branch" "$remote")
+            if [ "$push_status" = "has_changes" ] || [ "$push_status" = "new_branch" ]; then
+                return 0
+            fi
+        fi
+    done
+
+    # Check tags
+    if [ -n "$(get_unpushed_tags "$remote" "$platform_filter")" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Perform all push operations
+perform_push_operations() {
+    local remote="$1"
+    local platform_filter="${2:-}"
+    local push_failed=false
+
+    log_info "🚀 STARTING PUSH OPERATIONS"
+    log_info "=========================================="
+    log_empty ""
+
+    # Push branches
+    local branches=("$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH")
+    for branch in "${branches[@]}"; do
+        if ! check_branch_exists "$branch"; then
+            log_info "⏭️  $branch [does not exist locally]"
+            continue
+        fi
+
+        local push_status=$(get_branch_push_status "$branch" "$remote")
+
+        case "$push_status" in
+            "has_changes"|"new_branch")
+                # Show platform context if applicable
+                if is_platform_specific_mode && [ -n "$platform_filter" ]; then
+                    local platform_type_display=$(get_platform_type_display "$platform_filter")
+                    log_info "   Platform: $platform_filter$platform_type_display"
+                fi
+
+                if ! push_branch "$branch" "$remote"; then
+                    push_failed=true
+                fi
+                ;;
+            "up_to_date")
+                log_info "✅ $branch [already up to date]"
+                ;;
+        esac
+        log_empty ""
+    done
+
+    if [ "$push_failed" = true ]; then
+        log_error "❌ Some branches failed to push"
+        return 1
+    fi
+
+    # Push tags
+    local tag_count=$(get_unpushed_tags "$remote" "$platform_filter" | wc -l | tr -d ' ')
+
+    if [ "$tag_count" -gt 0 ]; then
+        log_info "Pushing $tag_count tag(s)..."
+        if ! push_tags "$remote" "$platform_filter"; then
+            log_error "❌ Failed to push some tags"
+            return 1
+        fi
+    else
+        log_info "✅ No tags to push"
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# ARGUMENT PARSING AND HELP
+# =============================================================================
+
+parse_arguments() {
+    local remote="$REMOTE"
+    local platform_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            "--platform"|"-p")
+                shift
+                platform_filter="$1"
+                ;;
+            *)
+                if [[ "$1" =~ ^- ]]; then
+                    log_error "Unknown option: $1"
+                    log_info "Use 'git trident push-all --help' for usage information"
+                    exit 1
+                else
+                    remote="$1"
+                fi
+                ;;
+        esac
+        shift
+    done
+
+    echo "$remote $platform_filter"
+}
+
+# =============================================================================
+# MAIN FUNCTION
+# =============================================================================
+
+main() {
+    # Parse arguments
+    IFS=' ' read -r remote platform_filter <<< "$(parse_arguments "$@")"
+
+    # Initialize
+    log_info "🚀 Git Trident Push All"
+    log_info "=========================================="
+    log_info "Remote: $remote"
+
+    if [ -n "$platform_filter" ]; then
+        log_info "Platform filter: $platform_filter"
+    fi
+    log_empty ""
+
+    # Validate platform filter
+    if [ -n "$platform_filter" ] && is_platform_specific_mode; then
+        if ! validate_platform "$platform_filter"; then
+            log_error "Invalid platform: $platform_filter"
+            log_info "Supported platforms: $PLATFORMS"
+            exit 1
+        fi
+
+        # Show platform info
+        local platform_type_display=$(get_platform_type_display "$platform_filter")
+        local propagation_info=$(get_propagation_info_for_display "$platform_filter")
+        log_info "📱 Platform: $platform_filter$platform_type_display"
+        log_info "   Propagation: $propagation_info"
+        log_empty ""
+    fi
+
+    # Fetch latest
+    log_info "🔄 Fetching latest from $remote..."
+    if ! git fetch "$remote"; then
+        log_error "Failed to fetch from $remote"
+        exit 1
+    fi
+
+    # Show pending changes
+    show_pending_changes "$remote" "$platform_filter"
+    show_push_summary "$remote" "$platform_filter"
+
+    # Check if anything to push
+    if ! has_any_changes "$remote" "$platform_filter"; then
+        log_info "✅ Everything is up to date!"
+        exit 0
+    fi
+
+    # Confirm push
+    if ! confirm_action "Proceed with push?"; then
+        log_info "Push cancelled"
+        exit 0
+    fi
+
+    # Perform push operations
+    if perform_push_operations "$remote" "$platform_filter"; then
+        log_info "=========================================="
+        log_info "🎉 ALL CHANGES PUSHED SUCCESSFULLY!"
+        log_info "=========================================="
+
+        # Verify sync
+        log_empty ""
+        log_info "🔍 Verifying synchronization..."
+        if [ -f "$SCRIPT_DIR/git-trident-verify-sync" ]; then
+            "$SCRIPT_DIR/git-trident-verify-sync" --brief
+        fi
+    else
+        log_error "❌ Push failed or incomplete"
+        exit 1
+    fi
+}
+
+# Execute main function
+main "$@"

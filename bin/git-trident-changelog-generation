@@ -1,0 +1,697 @@
+#!/bin/bash
+# Git Trident Tools - Changelog & Release Notes Generator
+# Generates CHANGELOG.md, QA_NOTES.md, and RELEASE_NOTES.md
+#
+# Usage:
+#   git trident staging   changelog <version>
+#   git trident production changelog <version>
+#
+# Output files per environment:
+#   Staging    → CHANGELOG.md + QA_NOTES.md   (in release_notes/)
+#   Production → CHANGELOG.md + RELEASE_NOTES.md (in release_notes/)
+#
+# Version format:
+#   Legacy:            MAJOR.MINOR.PATCH         (e.g. 1.2.3)
+#   Platform-specific: platform-MAJOR.MINOR.PATCH (e.g. android-1.2.3)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source dependencies
+source "$SCRIPT_DIR/../lib/git-trident-common.sh"
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+CHANGELOG_FILENAME="CHANGELOG.md"
+QA_NOTES_FILENAME="QA_NOTES.md"
+RELEASE_NOTES_FILENAME="RELEASE_NOTES.md"
+
+# =============================================================================
+# OUTPUT PATH RESOLUTION
+# =============================================================================
+
+# Resolve the output directory for the given platform.
+# Legacy mode:            release_notes/
+# Platform-specific mode: release_notes/<platform>/
+get_output_dir() {
+    local platform="${1:-}"
+
+    if is_platform_specific_mode && [ -n "$platform" ]; then
+        local dir="release_notes/${platform}"
+        mkdir -p "$dir"
+        echo "$dir"
+    else
+        local dir="release_notes"
+        mkdir -p "$dir"
+        echo "$dir"
+    fi
+}
+
+# =============================================================================
+# BRANCH VALIDATION
+# =============================================================================
+
+# Ensure the current branch is a release or hotfix branch for the given env.
+validate_branch() {
+    local environment="$1"
+
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+    local release_prefix hotfix_prefix
+    if [ "$environment" = "staging" ]; then
+        release_prefix="${RELEASE_STAGING_PREFIX:-release/stg/}"
+        hotfix_prefix="${HOTFIX_STAGING_PREFIX:-hotfix/stg/}"
+    elif [ "$environment" = "production" ]; then
+        release_prefix="${RELEASE_PRODUCTION_PREFIX:-release/prod/}"
+        hotfix_prefix="${HOTFIX_PRODUCTION_PREFIX:-hotfix/prod/}"
+    else
+        log_error "Unknown environment: $environment"
+        return 1
+    fi
+
+    if echo "$current_branch" | grep -q "^${release_prefix}" || \
+       echo "$current_branch" | grep -q "^${hotfix_prefix}"; then
+        log_debug "Branch validation passed: $current_branch"
+        return 0
+    fi
+
+    log_error "This command must be run from a ${environment} release or hotfix branch."
+    log_info "  Current branch: $current_branch"
+    log_info "  Expected: ${release_prefix}* or ${hotfix_prefix}*"
+    return 1
+}
+
+# =============================================================================
+# TAG RESOLUTION
+# =============================================================================
+
+# Find the most recent tag for the given environment, sorted by version.
+# - Staging: latest staging/*-rc-* tag across ALL base versions
+# - Production: latest production/* tag
+# Platform filtering applied if platform is provided.
+# Returns empty string for the initial case (no tags yet).
+find_previous_env_tag() {
+    local environment="$1"
+    local platform="${2:-}"
+
+    if [ "$environment" = "staging" ]; then
+        # For staging: find the newer of the latest staging OR latest production tag
+        local stg_pattern prod_pattern
+        if is_platform_specific_mode && [ -n "$platform" ]; then
+            stg_pattern="${STAGING_TAG_PREFIX}${platform}-*"
+            prod_pattern="${PRODUCTION_TAG_PREFIX}${platform}-*"
+        else
+            stg_pattern="${STAGING_TAG_PREFIX}*"
+            prod_pattern="${PRODUCTION_TAG_PREFIX}*"
+        fi
+
+        local latest_stg latest_prod
+        latest_stg=$(git tag -l "$stg_pattern" 2>/dev/null | sort -V | tail -1)
+        latest_prod=$(git tag -l "$prod_pattern" 2>/dev/null | sort -V | tail -1)
+
+        if [ -n "$latest_stg" ] && [ -n "$latest_prod" ]; then
+            # Compare dates using commit timestamp
+            local stg_date prod_date
+            stg_date=$(git log -1 --format=%at "$latest_stg" 2>/dev/null || echo 0)
+            prod_date=$(git log -1 --format=%at "$latest_prod" 2>/dev/null || echo 0)
+
+            if [ "$prod_date" -gt "$stg_date" ]; then
+                echo "$latest_prod"
+            else
+                echo "$latest_stg"
+            fi
+        else
+            # One or none exist
+            echo "${latest_stg:-${latest_prod:-}}"
+        fi
+    else
+        # For production: find the latest production tag
+        local tag_pattern
+        if is_platform_specific_mode && [ -n "$platform" ]; then
+            tag_pattern="${PRODUCTION_TAG_PREFIX}${platform}-*"
+        else
+            tag_pattern="${PRODUCTION_TAG_PREFIX}*"
+        fi
+
+        local latest_tag
+        latest_tag=$(git tag -l "$tag_pattern" 2>/dev/null | sort -V | tail -1)
+        echo "${latest_tag:-}"
+    fi
+}
+
+# Resolve the version string to display in the markdown header.
+# - Staging: full RC version from latest RC tag (e.g. 1.1.0-rc-02)
+# - Production: base version as-is (e.g. 1.1.0)
+# In platform-specific mode the platform prefix is stripped so the header
+# shows only the numeric version (e.g. "1.2.0" not "android-1.2.0").
+resolve_version_display() {
+    local environment="$1"
+    local version="$2"
+    local platform="${3:-}"
+
+    # Strip platform prefix for display (android-1.2.0 → 1.2.0)
+    local display_version="$version"
+    if [ -n "$platform" ]; then
+        display_version="${version#"${platform}"-}"
+    fi
+
+    if [ "$environment" = "staging" ]; then
+        local rc_num
+        rc_num=$(get_next_rc_number "$version")
+        local suffix
+        suffix="$(get_rc_suffix)"
+        echo "${display_version}${suffix}${rc_num}"
+    else
+        # Production: use version as-is (platform-stripped)
+        echo "$display_version"
+    fi
+}
+
+# =============================================================================
+# COMMIT COLLECTION
+# =============================================================================
+
+# Collect commits between two refs, excluding merge commits.
+# If prev_ref is empty, collects ALL commits up to head_ref.
+collect_commits() {
+    local prev_ref="${1:-}"
+    local head_ref="${2:-HEAD}"
+
+    if [ -n "$prev_ref" ]; then
+        git log --no-merges --pretty=format:"%s" "${prev_ref}..${head_ref}" 2>/dev/null
+    else
+        git log --no-merges --pretty=format:"%s" "$head_ref" 2>/dev/null
+    fi
+}
+
+# Filter commits to only those belonging to the given platform.
+# In platform-specific mode each commit may be prefixed with [platform].
+# Rules:
+#   - Keep commits tagged [<platform>]   → belong to this platform
+#   - Keep commits with NO platform tag  → generic/unscoped commits
+#   - Drop commits tagged [<other>]      → belong to a different platform
+#
+# If platform is empty the original list is returned unchanged (legacy mode).
+filter_commits_by_platform() {
+    local commits="$1"
+    local platform="${2:-}"
+
+    # Nothing to filter in legacy mode or when no commits
+    if [ -z "$platform" ] || [ -z "$commits" ]; then
+        echo "$commits"
+        return 0
+    fi
+
+    local filtered=""
+    while IFS= read -r commit_msg; do
+        [ -z "$commit_msg" ] && continue
+
+        if echo "$commit_msg" | grep -qE "^\\[${platform}\\][[:space:]]*"; then
+            # Matches [<platform>] – include
+            filtered="${filtered}${commit_msg}"$'\n'
+        elif echo "$commit_msg" | grep -qE "^\\[[a-zA-Z0-9_-]+\\][[:space:]]*"; then
+            # Has a DIFFERENT platform tag – exclude
+            : # drop
+        else
+            # No platform tag at all – include as generic commit
+            filtered="${filtered}${commit_msg}"$'\n'
+        fi
+    done <<< "$commits"
+
+    # Strip trailing blank lines
+    echo "$filtered" | sed '/^[[:space:]]*$/d'
+}
+
+# =============================================================================
+# COMMIT PARSING & CATEGORIZATION
+# =============================================================================
+
+# Check if a prefix is in a pipe-separated exclusion list.
+# Returns 0 (true) if excluded, 1 (false) if included.
+is_prefix_excluded() {
+    local prefix="$1"
+    local exclusion_list="$2"
+
+    [ -z "$exclusion_list" ] && return 1
+
+    local old_ifs="$IFS"
+    IFS='|'
+    for excluded in $exclusion_list; do
+        if [ "$prefix" = "$excluded" ]; then
+            IFS="$old_ifs"
+            return 0
+        fi
+    done
+    IFS="$old_ifs"
+    return 1
+}
+
+# Categorize commits by their prefix.
+# Supports multiple prefixes in a single message (e.g. "feat: A fix: B").
+#
+# file_type determines exclusion rules:
+#   "changelog"      → no exclusions (all commits)
+#   "qa_notes"       → excludes CHANGELOG_QA_EXCLUDED_PREFIXES
+#   "release_notes"  → excludes CHANGELOG_RELEASE_EXCLUDED_PREFIXES
+#
+# Output: lines of "prefix|||message" on stdout
+categorize_commits() {
+    local commits="$1"
+    local file_type="$2"
+
+    local prefixes_str="${COMMIT_PREFIXES:-}"
+    if [ -z "$prefixes_str" ]; then
+        log_error "COMMIT_PREFIXES not configured"
+        return 1
+    fi
+
+    # Determine which exclusion list to use
+    local exclusion_list=""
+    case "$file_type" in
+        "qa_notes")
+            exclusion_list="${CHANGELOG_QA_EXCLUDED_PREFIXES:-}"
+            ;;
+        "release_notes")
+            exclusion_list="${CHANGELOG_RELEASE_EXCLUDED_PREFIXES:-wip|cmd}"
+            ;;
+        *)
+            # "changelog" — no exclusions
+            exclusion_list=""
+            ;;
+    esac
+
+    while IFS= read -r commit_msg; do
+        [ -z "$commit_msg" ] && continue
+
+        # Skip git-generated comment lines
+        echo "$commit_msg" | grep -q '^#' && continue
+
+        # Strip platform prefix from message if present, e.g. "[android] "
+        local stripped_msg
+        stripped_msg=$(echo "$commit_msg" | sed 's/^\[[a-zA-Z0-9_-]*\][[:space:]]*//')
+
+        # Split multiple prefixes into separate lines
+        # e.g. "feat: A fix: B" →
+        # feat: A
+        # fix: B
+        local split_messages
+        split_messages=$(echo "$stripped_msg" | sed -E "s/ (${prefixes_str}):/\n\1:/g")
+
+        while IFS= read -r sub_msg; do
+            [ -z "$sub_msg" ] && continue
+
+            # Try to match against known prefixes using sed
+            local result
+            result=$(echo "$sub_msg" | sed -E -n "s/^(${prefixes_str}):[[:space:]]*(.*)/\1|||\2/p")
+
+            [ -z "$result" ] && continue
+
+            # Extract prefix (everything before first |||)
+            local matched_prefix
+            matched_prefix=$(echo "$result" | cut -d'|' -f1)
+            local description
+            description=$(echo "$result" | cut -d'|' -f4-)
+
+            # Apply exclusion filter
+            if [ -n "$exclusion_list" ] && is_prefix_excluded "$matched_prefix" "$exclusion_list"; then
+                continue
+            fi
+
+            echo "${matched_prefix}|||${description}"
+        done <<< "$split_messages"
+    done <<< "$commits"
+}
+
+# =============================================================================
+# MARKDOWN GENERATION
+# =============================================================================
+
+# Get human-readable category title for a given prefix.
+# Uses COMMIT_PREFIX_DESCRIPTIONS from config. Falls back to capitalizing prefix.
+# shellcheck disable=SC2206
+get_category_title() {
+    local prefix="$1"
+
+    local prefixes_str="${COMMIT_PREFIXES:-}"
+    local descriptions_str="${COMMIT_PREFIX_DESCRIPTIONS:-}"
+
+    if [ -z "$prefixes_str" ] || [ -z "$descriptions_str" ]; then
+        # Fallback: capitalize first letter (Bash 3.2 compatible)
+        echo "$prefix" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'
+        return 0
+    fi
+
+    # Walk through both pipe-separated lists in parallel
+    local old_ifs="$IFS"
+    IFS='|'
+    local -a p_arr=($prefixes_str)
+    local -a d_arr=($descriptions_str)
+    IFS="$old_ifs"
+
+    for i in "${!p_arr[@]}"; do
+        local pfx
+        pfx=$(echo "${p_arr[$i]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ "$pfx" = "$prefix" ]; then
+            if [ "$i" -lt "${#d_arr[@]}" ]; then
+                echo "${d_arr[$i]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+                return 0
+            fi
+            break
+        fi
+    done
+
+    # Fallback
+    echo "$prefix" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'
+}
+
+# Generate a markdown version section from categorized commit lines.
+# Arguments: version_display, date_str, categorized_lines, header_only
+# shellcheck disable=SC2206
+generate_version_section() {
+    local version_display="$1"
+    local date_str="$2"
+    local categorized_lines="$3"
+    local header_only="${4:-false}"
+
+    local output=""
+    output="### Version: ${version_display}"$'\n'
+    output="${output}###### ${date_str}"$'\n'
+    output="${output}"$'\n'
+
+    if [ "$header_only" = "true" ]; then
+        output="${output}---"$'\n'
+        echo "$output"
+        return 0
+    fi
+
+    # Load prefix order from config
+    local prefixes_str="${COMMIT_PREFIXES:-}"
+    if [ -z "$prefixes_str" ]; then
+        log_error "COMMIT_PREFIXES not configured"
+        return 1
+    fi
+
+    local old_ifs="$IFS"
+    IFS='|'
+    local -a prefixes_ordered=($prefixes_str)
+    IFS="$old_ifs"
+
+    local has_content=false
+
+    for pfx in "${prefixes_ordered[@]}"; do
+        pfx=$(echo "$pfx" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Collect items for this prefix from categorized lines
+        local section_items=""
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if echo "$line" | grep -q "^${pfx}|||"; then
+                local msg
+                msg=$(echo "$line" | sed "s/^${pfx}|||//")
+                if [ -n "$section_items" ]; then
+                    section_items="${section_items}"$'\n'"  - ${msg}"
+                else
+                    section_items="  - ${msg}"
+                fi
+            fi
+        done <<< "$categorized_lines"
+
+        if [ -n "$section_items" ]; then
+            local title
+            title=$(get_category_title "$pfx")
+            output="${output}> **${title}**"$'\n'
+            
+            if [ "$title" = "Commands" ]; then
+                # Formatting commands in a code block for better readability
+                local cmd_block
+                cmd_block=$(echo "$section_items" | sed 's/^  - //')
+                output="${output}"'```commandline'$'\n'
+                output="${output}  ${cmd_block}"$'\n'
+                output="${output}"'```'$'\n'
+            else
+                output="${output}${section_items}"$'\n'
+            fi
+            
+            output="${output}"$'\n'
+            has_content=true
+        fi
+    done
+
+    if [ "$has_content" = false ]; then
+        output="${output}> *No notable changes in this release.*"$'\n'
+        output="${output}"$'\n'
+    fi
+
+    output="${output}---"$'\n'
+    echo "$output"
+}
+
+# Prepend a section on top of an existing file (or create it).
+prepend_to_file() {
+    local file_path="$1"
+    local new_section="$2"
+
+    local existing_content=""
+    if [ -f "$file_path" ]; then
+        existing_content=$(cat "$file_path")
+    fi
+
+    {
+        echo "$new_section"
+        if [ -n "$existing_content" ]; then
+            echo ""
+            echo "$existing_content"
+        fi
+    } > "$file_path"
+}
+
+# =============================================================================
+# WEBHOOK DELIVERY
+# =============================================================================
+
+# POST QA_NOTES.md content to a configured webhook URL.
+# [DEPRECATED / DISABLED] This feature is disabled as it is incomplete and needs a refactor.
+deliver_webhook() {
+    local file_path="$1"
+    log_debug "  ⚠️  Webhook delivery is currently disabled/deprecated in Git Trident."
+    return 0
+
+#    local file_path="$1"
+#    local webhook_url="${CHANGELOG_WEBHOOK_URL:-}"
+#
+#    # Silent skip if not configured
+#    [ -z "$webhook_url" ] && return 0
+#
+#    if [ ! -f "$file_path" ]; then
+#        log_warn "  Webhook: file not found: $file_path"
+#        return 1
+#    fi
+#
+#    local content
+#    content=$(cat "$file_path")
+#    [ -z "$content" ] && return 0
+#
+#    local format="${CHANGELOG_WEBHOOK_FORMAT:-slack}"
+#    local auth_header="${CHANGELOG_WEBHOOK_AUTH:-}"
+#
+#    local curl_args=(-s -o /dev/null -w "%{http_code}" -X POST)
+#
+#    # Add auth header if provided
+#    if [ -n "$auth_header" ]; then
+#        curl_args+=(-H "Authorization: $auth_header")
+#    fi
+#
+#    case "$format" in
+#        "slack")
+#            # Slack/Discord format: {"text": "content"}
+#            local escaped
+#            escaped=$(python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' < "$file_path")
+#            curl_args+=(-H "Content-Type: application/json")
+#            curl_args+=(-d "{\"text\": $escaped}")
+#            ;;
+#        "json")
+#            # Generic JSON: {"content": "content"}
+#            local escaped
+#            escaped=$(python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' < "$file_path")
+#            curl_args+=(-H "Content-Type: application/json")
+#            curl_args+=(-d "{\"content\": $escaped}")
+#            ;;
+#        "raw")
+#            # Raw markdown POST
+#            curl_args+=(-H "Content-Type: text/markdown")
+#            curl_args+=(--data-binary "@$file_path")
+#            ;;
+#        *)
+#            log_warn "  Unknown webhook format: $format. Skipping delivery."
+#            return 1
+#            ;;
+#    esac
+#
+#    log_info "  📤 Delivering QA Notes via webhook..."
+#    local http_code
+#    http_code=$(curl "${curl_args[@]}" "$webhook_url" 2>/dev/null)
+#
+#    if [[ "$http_code" =~ ^2 ]]; then
+#        log_info "  📤 QA Notes delivered via webhook (HTTP $http_code)"
+#    else
+#        log_warn "  ⚠️  Webhook delivery failed (HTTP ${http_code:-000}). QA Notes saved locally."
+#    fi
+}
+
+# =============================================================================
+# FILE WRITING
+# =============================================================================
+
+# Write the appropriate files for the given environment.
+# Staging:    CHANGELOG.md + QA_NOTES.md
+# Production: CHANGELOG.md + RELEASE_NOTES.md
+write_files() {
+    local environment="$1"
+    local output_dir="$2"
+    local version_display="$3"
+    local date_str="$4"
+    local commits="$5"
+
+    local is_prod_changelog=false
+    [ "$environment" = "production" ] && is_prod_changelog=true
+
+    # --- CHANGELOG.md (always, no exclusions) ---
+    local changelog_categorized
+    changelog_categorized=$(categorize_commits "$commits" "changelog")
+    local changelog_section
+    changelog_section=$(generate_version_section "$version_display" "$date_str" "$changelog_categorized" "$is_prod_changelog")
+    local changelog_path="${output_dir}/${CHANGELOG_FILENAME}"
+    prepend_to_file "$changelog_path" "$changelog_section"
+    log_info "  ✅ ${CHANGELOG_FILENAME} updated: $changelog_path"
+
+    if [ "$environment" = "staging" ]; then
+        # --- QA_NOTES.md (staging, with QA exclusions) ---
+        local qa_categorized
+        qa_categorized=$(categorize_commits "$commits" "qa_notes")
+        local qa_section
+        qa_section=$(generate_version_section "$version_display" "$date_str" "$qa_categorized")
+        local qa_path="${output_dir}/${QA_NOTES_FILENAME}"
+        prepend_to_file "$qa_path" "$qa_section"
+        log_info "  ✅ ${QA_NOTES_FILENAME} updated: $qa_path"
+
+        # Deliver via webhook if configured
+        deliver_webhook "$qa_path"
+
+    elif [ "$environment" = "production" ]; then
+        # --- RELEASE_NOTES.md (production, with release exclusions) ---
+        local rn_categorized
+        rn_categorized=$(categorize_commits "$commits" "release_notes")
+        local rn_section
+        rn_section=$(generate_version_section "$version_display" "$date_str" "$rn_categorized")
+        local rn_path="${output_dir}/${RELEASE_NOTES_FILENAME}"
+        prepend_to_file "$rn_path" "$rn_section"
+        log_info "  ✅ ${RELEASE_NOTES_FILENAME} updated: $rn_path"
+    fi
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    local environment="$1"
+    local version="${2:-}"
+
+    # --- Validate arguments ---
+    if [ -z "$environment" ]; then
+        log_error "Environment required: staging or production"
+        log_info "Usage: git trident staging|production changelog <version>"
+        exit 1
+    fi
+
+    if [ -z "$version" ]; then
+        log_error "Version required"
+        log_info "Usage: git trident ${environment} changelog <version>"
+        exit 1
+    fi
+
+    log_info "📋 Git Trident Changelog Generator"
+    log_info "=================================="
+    log_info "  Environment: $environment"
+    log_info "  Version:     $version"
+    log_empty ""
+
+    # --- Pre-operation checks ---
+    if ! pre_operation_checks "changelog"; then
+        exit 1
+    fi
+
+    # --- Branch validation ---
+    if ! validate_branch "$environment"; then
+        exit 1
+    fi
+
+    # --- Platform resolution ---
+    local platform=""
+    if is_platform_specific_mode; then
+        platform=$(extract_platform_from_version "$version")
+        if [ -z "$platform" ]; then
+            log_error "Platform-specific mode enabled but no platform found in version: $version"
+            log_info "Expected format: platform-MAJOR.MINOR.PATCH"
+            exit 1
+        fi
+        log_info "  Platform:    $platform"
+    fi
+
+    # --- Version display ---
+    local version_display
+    version_display=$(resolve_version_display "$environment" "$version" "$platform")
+    log_info "  Display:     $version_display"
+
+    # --- Find previous tag ---
+    local prev_tag
+    prev_tag=$(find_previous_env_tag "$environment" "$platform")
+    if [ -n "$prev_tag" ]; then
+        log_info "  Previous tag: $prev_tag"
+    else
+        log_info "  Previous tag: <initial> (first release)"
+    fi
+
+    # --- Collect commits ---
+    log_info "  Collecting commits: ${prev_tag:-<first commit>} → HEAD"
+    local commits
+    commits=$(collect_commits "$prev_tag" "HEAD")
+
+    # In platform-specific mode, restrict to commits that belong to this platform.
+    # Commits tagged [<other-platform>] are excluded; commits with no platform
+    # tag (generic commits) are kept alongside [<platform>]-tagged ones.
+    if is_platform_specific_mode && [ -n "$platform" ]; then
+        local total_before
+        total_before=$(echo "$commits" | grep -c . 2>/dev/null || echo 0)
+        commits=$(filter_commits_by_platform "$commits" "$platform")
+        local total_after
+        total_after=$(echo "$commits" | grep -c . 2>/dev/null || echo 0)
+        log_info "  Platform filter [$platform]: ${total_before} → ${total_after} commits"
+    fi
+
+    if [ -z "$commits" ]; then
+        log_warn "  No commits found since ${prev_tag:-initial commit}."
+    fi
+
+    # --- Date ---
+    local date_str
+    date_str=$(date "+%B %-d, %Y")
+
+    # --- Output directory ---
+    local output_dir
+    output_dir=$(get_output_dir "$platform")
+
+    # --- Write files ---
+    write_files "$environment" "$output_dir" "$version_display" "$date_str" "$commits"
+
+    log_empty ""
+    log_info "🎉 Done! Review the generated file(s) and commit them before finishing the release."
+}
+
+# Auto-execute if not sourced
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

@@ -1,0 +1,15 @@
+# Default ignored files
+/.idea/
+.DS_Store
+
+# =============================================================================
+# Git Trident — config file rules
+# =============================================================================
+# git-trident-config       → COMMIT THIS (project settings, shared with team)
+# .git-trident-config      → optional hidden variant; gitignore it if you
+#                               prefer not to commit it (teammates fall back to global)
+# ~/.git-trident-config    → global/machine config; NEVER in git
+# =============================================================================
+
+# Uncomment to gitignore the hidden project config variant:
+# .git-trident-config

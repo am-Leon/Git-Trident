@@ -1,0 +1,76 @@
+# =============================================================================
+# Git Trident — GLOBAL Configuration
+# =============================================================================
+# Installed automatically to: ~/.git-trident-config
+#
+# PURPOSE: Machine-level defaults that apply to ALL projects on this machine.
+# These settings control tool behavior, security, and automation.
+#
+# NOTE: Keys marked [GLOBAL ONLY] must NOT be placed in a project config file.
+#       The library will warn you if they are found there.
+#
+# Project-specific settings (branch names, tag prefixes, platforms…) belong in
+# the file: <project-root>/git-trident-config   (committed to git)
+# =============================================================================
+
+# =============================================================================
+# [GLOBAL ONLY] AUTOMATION & PUSH BEHAVIOR
+# =============================================================================
+
+# Automatically push changes and tags to remote after finishing a release or hotfix.
+# Controlled at machine level because it affects outbound network operations.
+AUTO_PUSH_ON_FINISH=false
+
+# Delete the local (and remote) branch after finishing a release or hotfix.
+DELETE_BRANCH_ON_FINISH=true
+
+# =============================================================================
+# [GLOBAL ONLY] SECURITY & SAFETY
+# =============================================================================
+
+# Ask for confirmation before performing critical actions.
+REQUIRE_CONFIRMATION=true
+
+# Require a clean working tree before starting/finishing operations.
+REQUIRE_CLEAN_WORKING_TREE=true
+
+# Validate connectivity to the remote before starting operations.
+VALIDATE_REMOTE_CONNECTIVITY=true
+
+# Cache duration for remote tag checks (in seconds). Default: 5 minutes.
+REMOTE_TAG_CACHE_DURATION=300
+
+# Configuration validation behavior.
+# "strict"  – error if any required config is missing (recommended)
+# "relaxed" – use defaults for missing values, warn only
+CONFIG_VALIDATION_MODE="strict"
+
+# =============================================================================
+# [GLOBAL ONLY] DEBUGGING & LOGGING
+# =============================================================================
+
+# Debug mode — shows additional diagnostic information when true.
+DEBUG=false
+
+# =============================================================================
+# [GLOBAL ONLY] GIT HOOKS
+# =============================================================================
+
+# Master switch: enable or disable Git Trident hooks globally.
+# If false, all hooks are disabled regardless of individual settings.
+HOOKS_ENABLED=false
+
+# Bypass git-trident hooks while still running local project hooks.
+GIT_TRIDENT_SKIP_HOOKS=false
+
+# =============================================================================
+# NOTES
+# =============================================================================
+# - This file is never committed to git; keep sensitive values here.
+# - Project settings (branch names, tag prefixes, platforms) live in:
+#       <project-root>/git-trident-config
+# - Config load order (highest priority first):
+#       1. <project-root>/git-trident-config  ← project (committed)
+#       2. <project-root>/.git-trident-config ← project (hidden / git ignored)
+#       3. ~/.git-trident-config              ← this file (global / machine)
+# =============================================================================

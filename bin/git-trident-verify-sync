@@ -1,0 +1,1313 @@
+#!/bin/bash
+# Comprehensive Git Trident synchronization verification
+# Checks branch sync, tag consistency, platform integrity, and merge chains
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source common utilities
+source "$SCRIPT_DIR/../lib/git-trident-common.sh"
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+
+# =============================================================================
+# ARGUMENT PARSING
+# =============================================================================
+
+parse_arguments() {
+    local mode="comprehensive"  # Default: comprehensive verification
+    local generate_report=false
+    local show_deprecated=false
+    local platform_filter=""
+    local environment=""  # Will be validated against config
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            "--brief"|"-b")
+                mode="brief"
+                ;;
+            "--report"|"-r")
+                generate_report=true
+                ;;
+            "--deprecated"|"-d")
+                show_deprecated=true
+                ;;
+            "--platform"|"-p")
+                shift
+                platform_filter="$1"
+                ;;
+            "--check-branches"|"-B")
+                mode="branches"
+                ;;
+            "--check-tags"|"-T")
+                mode="tags"
+                ;;
+            "--check-platform"|"-P")
+                mode="platform"
+                ;;
+            "--check-sync"|"-S")
+                mode="sync"
+                ;;
+            "--env"|"-e")
+                shift
+                environment="$1"
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                log_info "Use 'git trident verify-sync --help' for usage information"
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    # Validate platform filter if provided
+    if [ -n "$platform_filter" ] && is_platform_specific_mode; then
+        if ! validate_platform "$platform_filter"; then
+            log_error "Invalid platform: $platform_filter"
+            log_info "Supported platforms: $PLATFORMS"
+            exit 1
+        fi
+    fi
+
+    # Validate environment if provided - check against configured branches
+    if [ -n "$environment" ]; then
+        # First, check if it matches any configured branch names
+        local is_configured_branch=false
+        local configured_branches=("$PRODUCTION_BRANCH" "$STAGING_BRANCH" "$DEVELOP_BRANCH")
+
+        for branch in "${configured_branches[@]}"; do
+            if [ "$environment" = "$branch" ]; then
+                is_configured_branch=true
+                break
+            fi
+        done
+
+        # If not a configured branch, check if it's a valid branch name
+        if [ "$is_configured_branch" = false ]; then
+            if ! check_branch_exists "$environment"; then
+                log_error "Invalid environment: $environment"
+                log_info "Configured branches:"
+                log_info "  • Production:  $PRODUCTION_BRANCH"
+                log_info "  • Staging:     $STAGING_BRANCH"
+                log_info "  • Develop:     $DEVELOP_BRANCH"
+                log_info "Or use any existing branch name"
+                exit 1
+            fi
+        fi
+    fi
+
+    echo "$mode $generate_report $show_deprecated $platform_filter $environment"
+}
+
+# =============================================================================
+# REPORT GENERATION
+# =============================================================================
+
+generate_sync_report() {
+    local check_results=("$@")
+    local report_file=".git/git-trident-verification-report-$(date +%Y%m%d-%H%M%S).txt"
+
+    {
+        echo "Git Trident Verification Report - $(date)"
+        echo "=========================================="
+        echo ""
+        echo "Configuration:"
+        echo "  Mode: $(is_platform_specific_mode && echo "Platform-specific" || echo "Legacy")"
+        echo "  Platforms: $PLATFORMS"
+        echo "  Production Branch: $PRODUCTION_BRANCH"
+        echo "  Staging Branch: $STAGING_BRANCH"
+        echo "  Develop Branch: $DEVELOP_BRANCH"
+        echo ""
+        echo "Check Results:"
+        for result in "${check_results[@]}"; do
+            echo "  $result"
+        done
+        echo ""
+        echo "Recent Tags:"
+        echo "  Production:"
+        git tag -l --sort=-v:refname "${PRODUCTION_TAG_PREFIX}*" | head -5 2>/dev/null || echo "    No production tags"
+        echo ""
+        echo "  Staging (latest per platform):"
+        if is_platform_specific_mode; then
+            for platform in $PLATFORMS; do
+                local latest_staging=$(git tag -l --sort=-v:refname "${STAGING_TAG_PREFIX}${platform}-*" | head -1 2>/dev/null)
+                echo "    $platform: ${latest_staging:-No tags}"
+            done
+        else
+            git tag -l --sort=-v:refname "${STAGING_TAG_PREFIX}*" | head -5 2>/dev/null || echo "    No staging tags"
+        fi
+        echo ""
+        echo "Branch Status:"
+        echo "  Production: $(git log -1 --oneline "$PRODUCTION_BRANCH" 2>/dev/null || echo 'Branch not found')"
+        echo "  Staging:    $(git log -1 --oneline "$STAGING_BRANCH" 2>/dev/null || echo 'Branch not found')"
+        echo "  Develop:    $(git log -1 --oneline "$DEVELOP_BRANCH" 2>/dev/null || echo 'Branch not found')"
+        echo ""
+        echo "Generated by Git Trident Tools"
+    } > "$report_file"
+
+    log_info "📊 Verification report generated: $report_file"
+}
+
+# =============================================================================
+# PLATFORM-SPECIFIC DISPLAY UTILITIES
+# =============================================================================
+
+show_platform_header() {
+    if is_platform_specific_mode; then
+        log_info "🌐  Platform-Specific Mode"
+        log_info "   Supported platforms: $PLATFORMS"
+
+        if [ -n "$COMMON_PLATFORMS" ] || [ -n "$INDEPENDENT_PLATFORMS" ]; then
+            log_info "   Common platforms: $COMMON_PLATFORMS"
+            log_info "   Independent platforms: $INDEPENDENT_PLATFORMS"
+        fi
+
+        log_empty ""
+    fi
+}
+
+show_platform_summary() {
+    if ! is_platform_specific_mode; then
+        return 0
+    fi
+
+    log_info "📊 Platform Release Summary"
+    log_empty "------------------------------------------"
+
+    # Split platforms into array
+    IFS=' ' read -ra platforms_array <<< "$PLATFORMS"
+
+    for platform in "${platforms_array[@]}"; do
+        # Get platform type
+        local platform_type=$(get_platform_type "$platform")
+        local type_symbol="📱"
+        if [ "$platform_type" = "common" ]; then
+            type_symbol="🔗"
+        fi
+
+        # Get latest production tag for this platform
+        local latest_prod=$(get_latest_production_tag_for_platform "$platform")
+
+        # Get latest staging tag for this platform
+        local staging_tags=$(get_all_staging_tags "$platform")
+        local latest_staging=$(echo "$staging_tags" | tail -1)
+
+        # Count tags
+        local staging_count=$(echo "$staging_tags" | wc -l | tr -d ' ')
+        local prod_count=$(get_all_production_tags "$platform" | wc -l | tr -d ' ')
+
+        # Determine sync status
+        local sync_status="✅"
+        local sync_message=""
+
+        if [ -n "$latest_prod" ] && [ -n "$latest_staging" ]; then
+            local prod_base=$(extract_base_version "$latest_prod")
+            local staging_base=$(extract_base_version_from_tag "$latest_staging" "$STAGING_TAG_PREFIX")
+
+            if is_version_greater "$staging_base" "$prod_base"; then
+                sync_status="🔄"
+                sync_message=" (staging ahead)"
+            elif [ "$staging_base" = "$prod_base" ]; then
+                sync_status="⚠️ "
+                sync_message=" (same version)"
+            fi
+        elif [ -z "$latest_staging" ]; then
+            sync_status="📭"
+            sync_message=" (no staging tags)"
+        elif [ -z "$latest_prod" ]; then
+            sync_status="🚀"
+            sync_message=" (not yet in production)"
+        fi
+
+        # Format output
+        printf "  %s %-15s %s | Prod: %-20s | Staging: %-25s\n" \
+            "$sync_status" \
+            "$type_symbol $platform" \
+            "$sync_message" \
+            "${latest_prod:-None} ($prod_count)" \
+            "${latest_staging:-None} ($staging_count)"
+    done
+    log_empty ""
+}
+
+# =============================================================================
+# BRANCH SYNCHRONIZATION CHECKS
+# =============================================================================
+
+check_branch_sync_status() {
+    local branch_a="$1"
+    local branch_b="$2"
+    local expected_direction="$3"  # "subset" or "superset"
+    local silent="${4:-false}"
+
+    # Check if branches exist
+    if ! check_branch_exists "$branch_a"; then
+        [ "$silent" = false ] && log_info "❌ Branch $branch_a does not exist"
+        return 1
+    fi
+    if ! check_branch_exists "$branch_b"; then
+        [ "$silent" = false ] && log_info "❌ Branch $branch_b does not exist"
+        return 1
+    fi
+
+    local commits_a_b
+    commits_a_b=$(git log --oneline "$branch_b..$branch_a" 2>/dev/null | wc -l)
+    local commits_b_a
+    commits_b_a=$(git log --oneline "$branch_a..$branch_b" 2>/dev/null | wc -l)
+
+    if [ "$expected_direction" = "subset" ]; then
+        # branch_a should be subset of branch_b (branch_b should have all of branch_a's commits)
+        if [ "$commits_a_b" -eq 0 ]; then
+            [ "$silent" = false ] && log_info "✅ $branch_a ⊆ $branch_b (correct: $branch_a is subset of $branch_b)"
+            return 0
+        else
+            [ "$silent" = false ] && log_info "❌ $branch_a ⊈ $branch_b (problem: $branch_a has $commits_a_b commits not in $branch_b)"
+            return 1
+        fi
+    else  # superset
+        # branch_a should be superset of branch_b (branch_a should have all of branch_b's commits)
+        if [ "$commits_b_a" -eq 0 ]; then
+            [ "$silent" = false ] && log_info "✅ $branch_a ⊇ $branch_b (correct: $branch_a is superset of $branch_b)"
+            return 0
+        else
+            [ "$silent" = false ] && log_info "❌ $branch_a ⊉ $branch_b (problem: $branch_b has $commits_b_a commits not in $branch_a)"
+            return 1
+        fi
+    fi
+}
+
+check_all_branch_sync() {
+    local silent="${1:-false}"
+    local all_correct=true
+
+    [ "$silent" = false ] && log_info "🔍 Checking branch synchronization..."
+
+    # Check production ⊆ staging (production commits should be in staging)
+    if ! check_branch_sync_status "$PRODUCTION_BRANCH" "$STAGING_BRANCH" "subset" "$silent"; then
+        all_correct=false
+    fi
+
+    # Check staging ⊆ develop (staging commits should be in develop)
+    if ! check_branch_sync_status "$STAGING_BRANCH" "$DEVELOP_BRANCH" "subset" "$silent"; then
+        all_correct=false
+    fi
+
+    return "$([ "$all_correct" = true ] && echo 0 || echo 1)"
+}
+
+# =============================================================================
+# PLATFORM-AWARE TAG CONSISTENCY CHECKS
+# =============================================================================
+
+check_tag_patterns() {
+    local silent="${1:-false}"
+    local all_correct=true
+
+    [ "$silent" = false ] && log_info "🔍 Checking tag patterns..."
+
+    # Get all staging tags
+    local staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)
+
+    for tag in $staging_tags; do
+        local version=$(echo "$tag" | sed "s|^${STAGING_TAG_PREFIX}||")
+
+        # Check if tag matches expected pattern
+        if is_platform_specific_mode; then
+            # Should be: platform-MAJOR.MINOR.PATCH$(get_rc_suffix)NN
+            local suffix="$(get_rc_suffix)"
+            if [[ ! "$version" =~ ^[a-zA-Z0-9_-]+-[0-9]+\.[0-9]+\.[0-9]+${suffix}[0-9]+$ ]]; then
+                [ "$silent" = false ] && log_info "❌ Invalid staging tag pattern: $tag"
+                [ "$silent" = false ] && log_info "   Expected: platform-MAJOR.MINOR.PATCH${suffix}NN"
+                all_correct=false
+            fi
+        else
+            # Should be: MAJOR.MINOR.PATCH$(get_rc_suffix)NN
+            local suffix="$(get_rc_suffix)"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+${suffix}[0-9]+$ ]]; then
+                [ "$silent" = false ] && log_info "❌ Invalid staging tag pattern: $tag"
+                [ "$silent" = false ] && log_info "   Expected: MAJOR.MINOR.PATCH${suffix}NN"
+                all_correct=false
+            fi
+        fi
+    done
+
+    # Get all production tags
+    local production_tags=$(git tag -l "${PRODUCTION_TAG_PREFIX}*" 2>/dev/null)
+
+    for tag in $production_tags; do
+        local version=$(echo "$tag" | sed "s|^${PRODUCTION_TAG_PREFIX}||")
+
+        # Check if tag matches expected pattern
+        if is_platform_specific_mode; then
+            # Should be: platform-MAJOR.MINOR.PATCH (no RC)
+            if [[ ! "$version" =~ ^[a-zA-Z0-9_-]+-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                [ "$silent" = false ] && log_info "❌ Invalid production tag pattern: $tag"
+                [ "$silent" = false ] && log_info "   Expected: platform-MAJOR.MINOR.PATCH"
+                all_correct=false
+            fi
+        else
+            # Should be: MAJOR.MINOR.PATCH (no RC)
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                [ "$silent" = false ] && log_info "❌ Invalid production tag pattern: $tag"
+                [ "$silent" = false ] && log_info "   Expected: MAJOR.MINOR.PATCH"
+                all_correct=false
+            fi
+        fi
+    done
+
+    [ "$silent" = false ] && [ "$all_correct" = true ] && log_info "✅ All tag patterns are correct"
+    return "$([ "$all_correct" = true ] && echo 0 || echo 1)"
+}
+
+check_deprecated_tags() {
+    local silent="${1:-false}"
+    local show_deprecated="${2:-false}"
+    local has_deprecated_tags=false
+
+    [ "$silent" = false ] && log_info "🔍 Checking for deprecated tags..."
+
+    if is_platform_specific_mode; then
+        # Platform-specific mode: check each platform separately
+        for platform in $PLATFORMS; do
+            if check_deprecated_tags_for_platform "$platform" "$silent" "$show_deprecated"; then
+                has_deprecated_tags=true
+            fi
+        done
+    else
+        # Legacy mode: single check
+        if check_deprecated_tags_legacy "$silent" "$show_deprecated"; then
+            has_deprecated_tags=true
+        fi
+    fi
+
+    if [ "$has_deprecated_tags" = true ]; then
+        if [ "$show_deprecated" = true ]; then
+            [ "$silent" = false ] && log_warn "⚠️  Found deprecated tags (this is NORMAL after production releases)"
+            [ "$silent" = false ] && log_info "   Deprecated tags should NOT be promoted to production"
+        else
+            [ "$silent" = false ] && log_info "ℹ️  Deprecated tags exist (use --deprecated to see details)"
+        fi
+        return 0  # This is a warning, not an error
+    else
+        [ "$silent" = false ] && log_info "✅ No deprecated tags found"
+        return 0
+    fi
+}
+
+check_deprecated_tags_for_platform() {
+    local platform="$1"
+    local silent="$2"
+    local show_deprecated="$3"
+    local has_deprecated_tags=false
+
+    if [ "$show_deprecated" = true ]; then
+        [ "$silent" = false ] && log_info "  Platform: $platform"
+    fi
+
+    # Get production tags for this platform
+    local production_tags=$(get_all_production_tags "$platform")
+
+    if [ -z "$production_tags" ]; then
+        if [ "$show_deprecated" = true ]; then
+            [ "$silent" = false ] && log_info "    ✅ No production tags for $platform (no deprecated tags possible)"
+        fi
+        return 0  # No deprecated tags possible
+    fi
+
+    # Get the latest production tag for this platform
+    local latest_production_tag=$(echo "$production_tags" | sort -V -r | head -1)
+    local latest_version=$(echo "$latest_production_tag" | sed "s|^${PRODUCTION_TAG_PREFIX}||")
+
+    # Check if any staging tags exist for versions that are already in production
+    local staging_tags=$(get_all_staging_tags "$platform")
+
+    for staging_tag in $staging_tags; do
+        local staging_version=$(echo "$staging_tag" | sed "s|^${STAGING_TAG_PREFIX}||")
+        local base_version=$(extract_base_version "$staging_version")
+
+        # Check if this base version has a production tag
+        local prod_tag="${PRODUCTION_TAG_PREFIX}${platform}-${base_version}"
+
+        if git rev-parse "$prod_tag" >/dev/null 2>&1; then
+            has_deprecated_tags=true
+            if [ "$show_deprecated" = true ]; then
+                [ "$silent" = false ] && log_info "    ⚠️  Deprecated: $staging_tag"
+                [ "$silent" = false ] && log_info "        Version $base_version already in production as $prod_tag"
+            fi
+        fi
+    done
+
+    if [ "$show_deprecated" = true ]; then
+        if [ "$has_deprecated_tags" = true ]; then
+            [ "$silent" = false ] && log_info "    💡 Deprecated tags are NORMAL after production releases"
+            [ "$silent" = false ] && log_info "      Do NOT promote deprecated tags to production"
+        else
+            [ "$silent" = false ] && log_info "    ✅ No deprecated tags for $platform"
+        fi
+    fi
+
+    # Return true if we found deprecated tags (for warning tracking)
+    [ "$has_deprecated_tags" = true ]
+}
+
+check_deprecated_tags_legacy() {
+    local silent="$1"
+    local show_deprecated="$2"
+    local has_deprecated_tags=false
+
+    # Get all production tags
+    local production_tags=$(git tag -l "${PRODUCTION_TAG_PREFIX}*" 2>/dev/null)
+
+    if [ -z "$production_tags" ]; then
+        if [ "$show_deprecated" = true ]; then
+            [ "$silent" = false ] && log_info "  ✅ No production tags found (no deprecated tags possible)"
+        fi
+        return 0  # No deprecated tags possible
+    fi
+
+    # Get the latest production tag
+    local latest_production_tag=$(echo "$production_tags" | sort -V -r | head -1)
+    local latest_version=$(echo "$latest_production_tag" | sed "s|^${PRODUCTION_TAG_PREFIX}||")
+
+    # Check if any staging tags exist for versions that are already in production
+    local staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)
+
+    for staging_tag in $staging_tags; do
+        local staging_version=$(echo "$staging_tag" | sed "s|^${STAGING_TAG_PREFIX}||")
+        local base_version=$(extract_base_version "$staging_version")
+
+        # Check if this base version has a production tag
+        local prod_tag="${PRODUCTION_TAG_PREFIX}${base_version}"
+
+        if git rev-parse "$prod_tag" >/dev/null 2>&1; then
+            has_deprecated_tags=true
+            if [ "$show_deprecated" = true ]; then
+                [ "$silent" = false ] && log_info "  ⚠️  Deprecated: $staging_tag"
+                [ "$silent" = false ] && log_info "      Version $base_version already in production as $prod_tag"
+            fi
+        fi
+    done
+
+    if [ "$show_deprecated" = true ]; then
+        if [ "$has_deprecated_tags" = true ]; then
+            [ "$silent" = false ] && log_info "  💡 Deprecated tags are NORMAL after production releases"
+            [ "$silent" = false ] && log_info "    Do NOT promote deprecated tags to production"
+        else
+            [ "$silent" = false ] && log_info "  ✅ No deprecated tags found"
+        fi
+    fi
+
+    # Return true if we found deprecated tags (for warning tracking)
+    [ "$has_deprecated_tags" = true ]
+}
+
+# =============================================================================
+# PLATFORM CONSISTENCY CHECKS (MULTI-PLATFORM MODE ONLY)
+# =============================================================================
+
+check_platform_consistency() {
+    local silent="${1:-false}"
+    local all_correct=true
+
+    if ! is_platform_specific_mode; then
+        [ "$silent" = false ] && log_info "ℹ️  Platform consistency check skipped (not in platform-specific mode)"
+        return 0
+    fi
+
+    [ "$silent" = false ] && log_info "🔍 Checking platform consistency..."
+
+    # Check each platform individually
+    for platform in $PLATFORMS; do
+        if ! check_single_platform_consistency "$platform" "$silent"; then
+            all_correct=false
+        fi
+    done
+
+    # Check cross-platform consistency - now as informational only
+    check_cross_platform_consistency "$silent"
+
+    [ "$silent" = false ] && [ "$all_correct" = true ] && log_info "✅ Platform consistency verified"
+    return "$([ "$all_correct" = true ] && echo 0 || echo 1)"
+}
+
+check_single_platform_consistency() {
+    local platform="$1"
+    local silent="$2"
+    local platform_ok=true
+
+    [ "$silent" = false ] && log_info "  Platform: $platform"
+
+    # Get all staging tags for this platform
+    local staging_tags=$(get_all_staging_tags "$platform")
+    local staging_count=$(echo "$staging_tags" | wc -w)
+
+    # Get all production tags for this platform
+    local production_tags=$(get_all_production_tags "$platform")
+    local production_count=$(echo "$production_tags" | wc -w)
+
+    # Check RC sequence continuity for staging tags
+    if [ "$staging_count" -gt 0 ]; then
+        if ! validate_rc_sequence_for_platform "$platform" "$silent"; then
+            platform_ok=false
+        fi
+    fi
+
+    # Check for gaps in RC numbers
+    local base_versions=$(echo "$staging_tags" | \
+        sed "s|^${STAGING_TAG_PREFIX}||" | \
+        sed "s|$(get_rc_suffix)[0-9]*$||" | \
+        sort -V | \
+        uniq)
+
+    for base_version in $base_versions; do
+        # Get all RCs for this base version
+        local rc_tags=$(git tag -l "${STAGING_TAG_PREFIX}${base_version}$(get_rc_suffix)*" 2>/dev/null | sort -V)
+        local rc_count=$(echo "$rc_tags" | wc -w)
+
+        if [ "$rc_count" -gt 0 ]; then
+            local last_rc=$(echo "$rc_tags" | tail -1)
+            local last_rc_num=$(extract_rc_number "$last_rc")
+            local last_rc_int=$(echo "$last_rc_num" | sed 's/^0*//')
+
+            if [ "$last_rc_int" -ne "$rc_count" ]; then
+                [ "$silent" = false ] && log_info "    ⚠️  RC sequence gap for $base_version: have $rc_count RCs, last is RC-$last_rc_num"
+            fi
+        fi
+    done
+
+    [ "$silent" = false ] && log_info "    📊 Stats: $staging_count staging RCs, $production_count production releases"
+
+    return "$([ "$platform_ok" = true ] && echo 0 || echo 1)"
+}
+
+validate_rc_sequence_for_platform() {
+    local platform="$1"
+    local silent="$2"
+    local sequence_correct=true
+
+    # Get all base versions for this platform
+    local staging_tags=$(get_all_staging_tags "$platform")
+    local all_base_versions=$(echo "$staging_tags" | \
+        sed "s|^${STAGING_TAG_PREFIX}||" | \
+        sed "s|$(get_rc_suffix)[0-9]*$||" | \
+        sort -V | \
+        uniq)
+
+    for base_version in $all_base_versions; do
+        # Get all RCs for this base version
+        local rc_tags=$(git tag -l "${STAGING_TAG_PREFIX}${base_version}$(get_rc_suffix)*" 2>/dev/null | sort -V)
+
+        if [ -z "$rc_tags" ]; then
+            continue
+        fi
+
+        # Extract RC numbers and check sequence
+        local expected=1
+        for tag in $rc_tags; do
+            local rc_num=$(extract_rc_number "$tag")
+            local rc_num_int=$(echo "$rc_num" | sed 's/^0*//')
+
+            if [ "$rc_num_int" -ne "$expected" ]; then
+                [ "$silent" = false ] && log_info "    ❌ Missing RC $(printf "%02d" $expected) for $base_version (have RC-$rc_num)"
+                sequence_correct=false
+                break
+            fi
+            expected=$((expected + 1))
+        done
+    done
+
+    return "$([ "$sequence_correct" = true ] && echo 0 || echo 1)"
+}
+
+check_cross_platform_consistency() {
+    local silent="$1"
+
+    [ "$silent" = false ] && log_info "  Cross-platform consistency:"
+
+    # Get all unique base versions across all platforms
+    local all_staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)
+    local all_base_versions=$(echo "$all_staging_tags" | \
+        sed "s|^${STAGING_TAG_PREFIX}||" | \
+        sed "s|$(get_rc_suffix)[0-9]*$||" | \
+        sort -V | \
+        uniq)
+
+    # For each base version, check which platforms have it
+    for base_version in $all_base_versions; do
+        local platforms_with_version=""
+        local platform_count=0
+
+        for platform in $PLATFORMS; do
+            local pattern="${STAGING_TAG_PREFIX}${platform}-${base_version}$(get_rc_suffix)*"
+            if git tag -l "$pattern" >/dev/null 2>&1; then
+                platforms_with_version="$platforms_with_version$platform "
+                platform_count=$((platform_count + 1))
+            fi
+        done
+
+        if [ "$platform_count" -gt 1 ]; then
+            # This is informational only - versions existing on multiple platforms is normal
+            # for common platform changes being propagated
+            [ "$silent" = false ] && log_info "    ℹ️  Version $base_version exists on $platform_count platforms"
+        fi
+    done
+
+    return 0
+}
+
+# =============================================================================
+# MERGE CHAIN INTEGRITY CHECKS
+# =============================================================================
+
+check_merge_chain_integrity() {
+    local silent="${1:-false}"
+    local all_correct=true
+
+    [ "$silent" = false ] && log_info "🔍 Checking merge chain integrity..."
+
+    if is_platform_specific_mode; then
+        # Check each platform separately
+        for platform in $PLATFORMS; do
+            if ! check_merge_chain_for_platform "$platform" "$silent"; then
+                all_correct=false
+            fi
+        done
+    else
+        # Legacy mode: check all tags together
+        if ! check_merge_chain_legacy "$silent"; then
+            all_correct=false
+        fi
+    fi
+
+    [ "$silent" = false ] && [ "$all_correct" = true ] && log_info "✅ Merge chain integrity verified"
+    return "$([ "$all_correct" = true ] && echo 0 || echo 1)"
+}
+
+check_merge_chain_for_platform() {
+    local platform="$1"
+    local silent="$2"
+    local platform_correct=true
+
+    [ "$silent" = false ] && log_info "  Platform: $platform"
+
+    # Get all staging tags for this platform, sorted by version
+    local staging_tags=$(get_all_staging_tags "$platform" | sort -V)
+
+    if [ -z "$staging_tags" ]; then
+        [ "$silent" = false ] && log_info "    📭 No staging tags for this platform"
+        return 0
+    fi
+
+    local previous_tag=""
+    local current_base_version=""
+    local issues_found=0
+
+    for tag in $staging_tags; do
+        local version=$(echo "$tag" | sed "s|^${STAGING_TAG_PREFIX}||")
+        local base_version=$(extract_base_version "$version")
+        local rc_number=$(extract_rc_number "$version")
+
+        # Convert RC number to integer for comparison
+        local rc_int=$(echo "$rc_number" | sed 's/^0*//')
+
+        if [ -n "$previous_tag" ] && [ "$current_base_version" = "$base_version" ]; then
+            # Check if this RC includes the previous RC
+            if ! git merge-base --is-ancestor "$previous_tag" "$tag" 2>/dev/null; then
+                [ "$silent" = false ] && log_info "    ❌ Merge chain broken: $tag does not include $previous_tag"
+                platform_correct=false
+                issues_found=$((issues_found + 1))
+            fi
+        fi
+
+        previous_tag="$tag"
+        current_base_version="$base_version"
+    done
+
+    if [ "$issues_found" -eq 0 ]; then
+        [ "$silent" = false ] && log_info "    ✅ Merge chain intact"
+    fi
+
+    return "$([ "$platform_correct" = true ] && echo 0 || echo 1)"
+}
+
+check_merge_chain_legacy() {
+    local silent="$1"
+    local all_correct=true
+
+    # Get all staging tags sorted by version
+    local staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null | sort -V)
+
+    if [ -z "$staging_tags" ]; then
+        [ "$silent" = false ] && log_info "📭 No staging tags found"
+        return 0
+    fi
+
+    local previous_tag=""
+    local current_base_version=""
+    local issues_found=0
+
+    for tag in $staging_tags; do
+        local version=$(echo "$tag" | sed "s|^${STAGING_TAG_PREFIX}||")
+        local base_version=$(extract_base_version "$version")
+        local rc_number=$(extract_rc_number "$version")
+
+        # Convert RC number to integer for comparison
+        local rc_int=$(echo "$rc_number" | sed 's/^0*//')
+
+        if [ -n "$previous_tag" ] && [ "$current_base_version" = "$base_version" ]; then
+            # Check if this RC includes the previous RC
+            if ! git merge-base --is-ancestor "$previous_tag" "$tag" 2>/dev/null; then
+                [ "$silent" = false ] && log_info "❌ Merge chain broken: $tag does not include $previous_tag"
+                all_correct=false
+                issues_found=$((issues_found + 1))
+            fi
+        fi
+
+        previous_tag="$tag"
+        current_base_version="$base_version"
+    done
+
+    if [ "$issues_found" -eq 0 ]; then
+        [ "$silent" = false ] && log_info "✅ Merge chain intact"
+    fi
+
+    return "$([ "$all_correct" = true ] && echo 0 || echo 1)"
+}
+
+# =============================================================================
+# ENVIRONMENT-SPECIFIC CHECKS (CONFIG-DRIVEN)
+# =============================================================================
+
+check_environment_specific() {
+    local branch_name="$1"  # Branch name to check
+    local platform_filter="${2:-}"
+
+    log_info "🔍 Checking branch: $branch_name"
+    log_info "═════════════════════════════════════════════════════════════════"
+    log_empty ""
+
+    # Check if branch exists
+    if ! check_branch_exists "$branch_name"; then
+        log_error "Branch not found: $branch_name"
+        return 1
+    fi
+
+    # Show branch info
+    show_branch_info "$branch_name"
+    log_empty ""
+
+    # Determine branch role based on configuration
+    local branch_role="custom"
+    [ "$branch_name" = "$PRODUCTION_BRANCH" ] && branch_role="production"
+    [ "$branch_name" = "$STAGING_BRANCH" ] && branch_role="staging"
+    [ "$branch_name" = "$DEVELOP_BRANCH" ] && branch_role="development"
+
+    log_info "Branch role: $branch_role"
+    log_empty ""
+
+    # Perform role-specific checks
+    case "$branch_role" in
+        "production")
+            check_branch_relationships "$branch_name" "$PRODUCTION_BRANCH"
+            check_production_tags "$platform_filter"
+            check_production_sync_status "$platform_filter"
+            validate_production_tags "$platform_filter"
+            ;;
+        "staging")
+            check_branch_relationships "$branch_name" "$STAGING_BRANCH"
+            check_staging_tags "$platform_filter"
+            check_rc_sequence "$platform_filter"
+            check_hotfix_propagation_status "$platform_filter"
+            ;;
+        "development")
+            check_branch_relationships "$branch_name" "$DEVELOP_BRANCH"
+            check_unmerged_features "$branch_name"
+            check_pending_releases "$platform_filter"
+            ;;
+        "custom")
+            log_info "Custom branch checks:"
+            check_branch_relationships "$branch_name" "custom"
+            check_custom_branch_tags "$branch_name"
+            ;;
+    esac
+
+    log_info "═════════════════════════════════════════════════════════════════"
+}
+
+# Generic branch relationship checker
+check_branch_relationships() {
+    local branch_name="$1"
+    local role="$2"
+
+    log_info "Branch relationships:"
+
+    # For each configured branch, check relationships
+    local all_branches=("$PRODUCTION_BRANCH" "$STAGING_BRANCH" "$DEVELOP_BRANCH")
+
+    for other_branch in "${all_branches[@]}"; do
+        if [ "$branch_name" = "$other_branch" ]; then
+            continue  # Skip self
+        fi
+
+        if check_branch_exists "$other_branch"; then
+            # Determine expected relationship based on role
+            local expected_direction=""
+
+            case "$role" in
+                "production")
+                    # Production should be subset of staging
+                    if [ "$other_branch" = "$STAGING_BRANCH" ]; then
+                        expected_direction="subset"
+                    fi
+                    ;;
+                "staging")
+                    # Staging should be subset of develop and superset of production
+                    if [ "$other_branch" = "$DEVELOP_BRANCH" ]; then
+                        expected_direction="subset"
+                    elif [ "$other_branch" = "$PRODUCTION_BRANCH" ]; then
+                        expected_direction="superset"
+                    fi
+                    ;;
+                "development")
+                    # Develop should be superset of staging
+                    if [ "$other_branch" = "$STAGING_BRANCH" ]; then
+                        expected_direction="superset"
+                    fi
+                    ;;
+            esac
+
+            if [ -n "$expected_direction" ]; then
+                if check_branch_sync_status "$branch_name" "$other_branch" "$expected_direction" true; then
+                    log_info "  • ✅ $branch_name → $other_branch: Correct"
+                else
+                    log_info "  • ⚠️  $branch_name → $other_branch: Check needed"
+                fi
+            else
+                # For custom or undefined relationships, just show sync status
+                local commits_forward=$(git_log_count "$other_branch..$branch_name")
+                local commits_backward=$(git_log_count "$branch_name..$other_branch")
+
+                if [ "$commits_forward" -eq 0 ] && [ "$commits_backward" -eq 0 ]; then
+                    log_info "  • 🔄 $branch_name ↔ $other_branch: Synchronized"
+                elif [ "$commits_forward" -gt 0 ] && [ "$commits_backward" -gt 0 ]; then
+                    log_info "  • 🔀 $branch_name ↔ $other_branch: Diverged ($commits_forward ↔ $commits_backward)"
+                elif [ "$commits_forward" -gt 0 ]; then
+                    log_info "  • → $branch_name → $other_branch: Ahead by $commits_forward"
+                else
+                    log_info "  • ← $branch_name ← $other_branch: Behind by $commits_backward"
+                fi
+            fi
+        else
+            log_info "  • ❓ $other_branch: Not found"
+        fi
+    done
+    log_empty ""
+}
+
+# Helper function - show branch info
+show_branch_info() {
+    local branch_name="$1"
+
+    local branch_commit=$(git rev-parse --short "$branch_name" 2>/dev/null)
+    local branch_count=$(git rev-list --count "$branch_name" 2>/dev/null || echo "0")
+    local last_commit=$(git log -1 --format="%h %s" "$branch_name" 2>/dev/null)
+    local last_date=$(git log -1 --format="%ad" --date=relative "$branch_name" 2>/dev/null)
+
+    log_info "Branch information:"
+    log_info "  • Latest commit: $branch_commit"
+    log_info "  • Total commits: $branch_count"
+    log_info "  • Last change: $last_date"
+    log_info "  • Last commit: $last_commit"
+}
+
+# Check custom branch tags
+check_custom_branch_tags() {
+    local branch_name="$1"
+
+    log_info "Tags on this branch:"
+
+    # Get tags pointing to this branch's commits
+    local branch_tags=$(git tag --points-to "$branch_name" 2>/dev/null)
+
+    if [ -z "$branch_tags" ]; then
+        # Try to find tags that point to commits in this branch
+        branch_tags=$(git tag --merged "$branch_name" 2>/dev/null | head -10)
+    fi
+
+    if [ -n "$branch_tags" ]; then
+        local tag_count=$(echo "$branch_tags" | wc -l | tr -d ' ')
+        log_info "  • Found $tag_count tag(s):"
+        echo "$branch_tags" | head -5 | while read tag; do
+            log_info "    - $tag"
+        done
+
+        if [ "$tag_count" -gt 5 ]; then
+            log_info "    ... and $((tag_count - 5)) more"
+        fi
+    else
+        log_info "  • No tags found on this branch"
+    fi
+    log_empty ""
+}
+
+# =============================================================================
+# SYNC STATUS AFTER OPERATIONS
+# =============================================================================
+
+check_sync_after_operations() {
+    local silent="${1:-false}"
+    local all_synced=true
+
+    [ "$silent" = false ] && log_info "🔍 Checking sync status after recent operations..."
+
+    if is_platform_specific_mode; then
+        # Check each platform
+        for platform in $PLATFORMS; do
+            if ! check_sync_for_platform "$platform" "$silent"; then
+                all_synced=false
+            fi
+        done
+    else
+        # Legacy mode
+        if ! check_sync_legacy "$silent"; then
+            all_synced=false
+        fi
+    fi
+
+    return "$([ "$all_synced" = true ] && echo 0 || echo 1)"
+}
+
+check_sync_for_platform() {
+    local platform="$1"
+    local silent="$2"
+    local platform_synced=true
+
+    [ "$silent" = false ] && log_info "  Platform: $platform"
+
+    # Get latest production tag for this platform
+    local latest_production=$(get_latest_production_tag_for_platform "$platform")
+
+    if [ -n "$latest_production" ]; then
+        # Check if staging releases need rebase after this production release
+        source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-production.sh"
+
+        if ! check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1; then
+            [ "$silent" = false ] && log_info "    ⚠️  Staging releases may need rebase after production $latest_production"
+            [ "$silent" = false ] && log_info "       Run: git trident staging sync-tags $latest_production --dry-run"
+            platform_synced=false
+        else
+            [ "$silent" = false ] && log_info "    ✅ Production $latest_production synced to staging"
+        fi
+    else
+        [ "$silent" = false ] && log_info "    📭 No production releases for $platform"
+    fi
+
+    # Check for any staging hotfixes that need propagation
+    local staging_base_versions=$(get_all_staging_tags "$platform" | \
+        sed "s|^${STAGING_TAG_PREFIX}||" | \
+        sed "s|$(get_rc_suffix)[0-9]*$||" | \
+        sort -V | \
+        uniq)
+
+    local hotfix_needs_propagation=false
+
+    for base_version in $staging_base_versions; do
+        # Skip if this version is in production
+        local prod_tag="${PRODUCTION_TAG_PREFIX}${platform}-${base_version}"
+        if git rev-parse "$prod_tag" >/dev/null 2>&1; then
+            continue
+        fi
+
+        # Check if this staging version has hotfix impact
+        source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-staging.sh"
+
+        if ! detect_staging_hotfix_impact "$base_version" >/dev/null 2>&1; then
+            hotfix_needs_propagation=true
+            [ "$silent" = false ] && log_info "    ⚠️  Staging hotfix $base_version may need propagation"
+            [ "$silent" = false ] && log_info "       Run: git trident staging sync-tags $base_version --dry-run"
+        fi
+    done
+
+    if [ "$hotfix_needs_propagation" = false ] && [ -z "$latest_production" ]; then
+        [ "$silent" = false ] && log_info "    ✅ No sync actions needed for $platform"
+    fi
+
+    return "$([ "$platform_synced" = true ] && echo 0 || echo 1)"
+}
+
+check_sync_legacy() {
+    local silent="$1"
+    local all_synced=true
+
+    # Get latest production tag
+    local latest_production=$(get_latest_production_tag)
+
+    if [ -n "$latest_production" ]; then
+        # Check if staging releases need rebase after this production release
+        source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-production.sh"
+
+        if ! check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1; then
+            [ "$silent" = false ] && log_info "⚠️  Staging releases may need rebase after production $latest_production"
+            [ "$silent" = false ] && log_info "   Run: git trident staging sync-tags $latest_production --dry-run"
+            all_synced=false
+        else
+            [ "$silent" = false ] && log_info "✅ Production $latest_production synced to staging"
+        fi
+    else
+        [ "$silent" = false ] && log_info "📭 No production releases"
+    fi
+
+    # Check for any staging hotfixes that need propagation
+    local staging_base_versions=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null | \
+        sed "s|^${STAGING_TAG_PREFIX}||" | \
+        sed "s|$(get_rc_suffix)[0-9]*$||" | \
+        sort -V | \
+        uniq)
+
+    local hotfix_needs_propagation=false
+
+    for base_version in $staging_base_versions; do
+        # Skip if this version is in production
+        local prod_tag="${PRODUCTION_TAG_PREFIX}${base_version}"
+        if git rev-parse "$prod_tag" >/dev/null 2>&1; then
+            continue
+        fi
+
+        # Check if this staging version has hotfix impact
+        source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-staging.sh"
+
+        if ! detect_staging_hotfix_impact "$base_version" >/dev/null 2>&1; then
+            hotfix_needs_propagation=true
+            [ "$silent" = false ] && log_info "⚠️  Staging hotfix $base_version may need propagation"
+            [ "$silent" = false ] && log_info "   Run: git trident staging sync-tags $base_version --dry-run"
+        fi
+    done
+
+    if [ "$hotfix_needs_propagation" = false ] && [ -z "$latest_production" ]; then
+        [ "$silent" = false ] && log_info "✅ No sync actions needed"
+    fi
+
+    return "$([ "$all_synced" = true ] && echo 0 || echo 1)"
+}
+
+# =============================================================================
+# COMPREHENSIVE VERIFICATION
+# =============================================================================
+
+run_comprehensive_verification() {
+    local silent="${1:-false}"
+    local generate_report="${2:-false}"
+    local show_deprecated="${3:-false}"
+
+    [ "$silent" = false ] && log_info "🔄 Running comprehensive Git Trident verification"
+    [ "$silent" = false ] && log_info "=========================================="
+
+    # Show mode and platform summary
+    show_platform_header
+    show_platform_summary
+
+    local all_critical_checks_passed=true
+    local check_results=()
+
+    # 1. Branch synchronization (CRITICAL - should fail if wrong)
+    [ "$silent" = false ] && log_empty ""
+    if check_all_branch_sync "$silent"; then
+        check_results+=("✅ Branch synchronization: PASSED")
+    else
+        check_results+=("❌ Branch synchronization: FAILED")
+        all_critical_checks_passed=false
+    fi
+
+    # 2. Tag patterns (CRITICAL - should fail if wrong)
+    [ "$silent" = false ] && log_empty ""
+    if check_tag_patterns "$silent"; then
+        check_results+=("✅ Tag patterns: PASSED")
+    else
+        check_results+=("❌ Tag patterns: FAILED")
+        all_critical_checks_passed=false
+    fi
+
+    # 3. Deprecated tags (WARNING ONLY - NOT AN ERROR)
+    [ "$silent" = false ] && log_empty ""
+    if check_deprecated_tags "$silent" "$show_deprecated"; then
+        if [ "$show_deprecated" = true ]; then
+            check_results+=("⚠️  Deprecated tags: FOUND (normal after production)")
+        else
+            check_results+=("⚠️  Deprecated tags: EXIST (use --deprecated to see)")
+        fi
+    else
+        check_results+=("✅ Deprecated tags: NONE")
+    fi
+
+    # 4. Platform consistency (WARNINGS allowed)
+    [ "$silent" = false ] && log_empty ""
+    if check_platform_consistency "$silent"; then
+        check_results+=("✅ Platform consistency: PASSED")
+    else
+        check_results+=("⚠️  Platform consistency: WARNINGS")
+        # Don't fail overall for warnings
+    fi
+
+    # 5. Merge chain integrity (CRITICAL - should fail if broken)
+    [ "$silent" = false ] && log_empty ""
+    if check_merge_chain_integrity "$silent"; then
+        check_results+=("✅ Merge chain integrity: PASSED")
+    else
+        check_results+=("❌ Merge chain integrity: FAILED")
+        all_critical_checks_passed=false
+    fi
+
+    # 6. Sync after operations (WARNING ONLY)
+    [ "$silent" = false ] && log_empty ""
+    if check_sync_after_operations "$silent"; then
+        check_results+=("✅ Operation synchronization: PASSED")
+    else
+        check_results+=("⚠️  Operation synchronization: WARNINGS")
+        # Don't fail overall for warnings
+    fi
+
+    # Summary
+    [ "$silent" = false ] && log_empty ""
+    [ "$silent" = false ] && log_info "=========================================="
+
+    if [ "$all_critical_checks_passed" = true ]; then
+        [ "$silent" = false ] && log_info "🎉 ALL CRITICAL CHECKS PASSED! Git Trident is healthy."
+    else
+        [ "$silent" = false ] && log_error "❌ SOME CRITICAL CHECKS FAILED! Review errors above."
+        [ "$silent" = false ] && log_empty ""
+        [ "$silent" = false ] && log_info "💡 Recommended actions:"
+        [ "$silent" = false ] && log_info "   - Fix branch synchronization issues first"
+        [ "$silent" = false ] && log_info "   - Check tag patterns and merge chains"
+        [ "$silent" = false ] && log_info "   - Run specific sync operations as suggested"
+    fi
+
+    # Generate report if requested
+    if [ "$generate_report" = true ]; then
+        generate_sync_report "${check_results[@]}"
+    fi
+
+    # Only return error for CRITICAL failures (branch sync, tag patterns, merge chain)
+    # Warnings (deprecated tags, sync suggestions) don't cause failure
+    return "$([ "$all_critical_checks_passed" = true ] && echo 0 || echo 1)"
+}
+
+# =============================================================================
+# BRIEF STATUS (QUICK CHECK)
+# =============================================================================
+
+show_brief_status() {
+    log_info "🔄 Git Trident Status"
+    log_info "================="
+    log_empty ""
+
+    # Mode and platform info
+    if is_platform_specific_mode; then
+        log_info "🌐 Mode: Platform-specific"
+        log_info "📱 Platforms: $PLATFORMS"
+        if [ -n "$COMMON_PLATFORMS" ]; then
+            log_info "🔗 Common: $COMMON_PLATFORMS"
+        fi
+        if [ -n "$INDEPENDENT_PLATFORMS" ]; then
+            log_info "📱 Independent: $INDEPENDENT_PLATFORMS"
+        fi
+        log_empty ""
+        show_platform_summary
+    else
+        log_info "📟 Mode: Legacy (single-environment)"
+        log_empty ""
+    fi
+
+    # Branch sync status (quick check) - only check the necessary relationships
+    log_info "Branch Synchronization:"
+    local all_branches_synced=true
+
+    # Check production → staging
+    echo -n "  Production → Staging: "
+    if check_branch_sync_status "$PRODUCTION_BRANCH" "$STAGING_BRANCH" "subset" true; then
+        echo "✅"
+    else
+        echo "❌"
+        all_branches_synced=false
+    fi
+
+    # Check staging → develop
+    echo -n "  Staging → Develop: "
+    if check_branch_sync_status "$STAGING_BRANCH" "$DEVELOP_BRANCH" "subset" true; then
+        echo "✅"
+    else
+        echo "❌"
+        all_branches_synced=false
+    fi
+
+    # Summary
+    if [ "$all_branches_synced" = true ]; then
+        log_empty "  ✅ All branches synchronized correctly"
+    else
+        log_empty "  ❌ Branch sync issues detected"
+    fi
+    log_empty ""
+
+    # Tag counts
+    local prod_count=$(git tag -l "${PRODUCTION_TAG_PREFIX}*" 2>/dev/null | wc -l | tr -d ' ')
+    local staging_count=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null | wc -l | tr -d ' ')
+
+    log_info "Tag Counts:"
+    log_empty "  Production: $prod_count"
+    log_empty "  Staging: $staging_count"
+    log_empty ""
+
+    # Quick sync check
+    log_info "Sync Status:"
+    if check_sync_after_operations true; then
+        log_empty "  ✅ All platforms synchronized"
+    else
+        log_empty "  ⚠️  Some sync actions recommended"
+    fi
+
+    # Add a separator at the end
+    log_empty "=================================="
+}
+
+# =============================================================================
+# MAIN FUNCTION
+# =============================================================================
+
+main() {
+    # Parse arguments
+    IFS=' ' read -r mode generate_report show_deprecated platform_filter environment <<< "$(parse_arguments "$@")"
+
+    # Apply platform filter if specified
+    if [ -n "$platform_filter" ]; then
+        PLATFORMS="$platform_filter"
+    fi
+
+    case "$mode" in
+        "brief")
+            show_brief_status
+            ;;
+        "branches")
+            check_all_branch_sync false
+            ;;
+        "tags")
+            check_tag_patterns false
+            check_deprecated_tags false "$show_deprecated"
+            ;;
+        "platform")
+            check_platform_consistency false
+            ;;
+        "sync")
+            check_sync_after_operations false
+            ;;
+        "comprehensive")
+            if [ -n "$environment" ]; then
+                # Environment is a branch name (validated in parse_arguments)
+                check_environment_specific "$environment" "$platform_filter"
+            else
+                run_comprehensive_verification false "$generate_report" "$show_deprecated"
+            fi
+            ;;
+    esac
+
+    exit $?
+}
+
+main "$@"

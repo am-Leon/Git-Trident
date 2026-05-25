@@ -1,0 +1,148 @@
+# =============================================================================
+# Git Trident — PROJECT Configuration
+# =============================================================================
+# Place this file in your project root as:
+#   git-trident-config        ← recommended (committed to git)
+#   .git-trident-config       ← hidden variant (can be git ignored)
+#
+# PURPOSE: Project-specific workflow settings.
+# This file IS committed to git so every developer on the team
+# gets the same branch names, tag formats, and platform setup automatically.
+#
+# NOTE: Keys marked [GLOBAL ONLY] (auto_push, security, debug…) must be set
+#       in ~/.git-trident-config and NOT here. The tool will warn if it
+#       finds them in a project config.
+# =============================================================================
+
+# =============================================================================
+# REQUIRED — BRANCH NAMES
+# =============================================================================
+
+PRODUCTION_BRANCH="production"
+STAGING_BRANCH="staging"
+DEVELOP_BRANCH="develop"
+
+# =============================================================================
+# REQUIRED — TAG PREFIXES
+# =============================================================================
+
+# Prefix for staging Release Candidate tags  (e.g.  staging/1.2.3-rc-01)
+STAGING_TAG_PREFIX="staging/"
+
+# Prefix for production tags  (e.g.  production/1.2.3)
+PRODUCTION_TAG_PREFIX="production/"
+
+# =============================================================================
+# REQUIRED — REMOTE
+# =============================================================================
+
+REMOTE="origin"
+
+# =============================================================================
+# TAG & VERSIONING
+# =============================================================================
+
+# Suffix inserted before the RC counter  (e.g.  1.2.3-rc-01)
+STAGING_TAG_SUFFIX="-rc-"
+
+# =============================================================================
+# BRANCH PREFIXES (used internally for release / hotfix branch names)
+# =============================================================================
+
+RELEASE_STAGING_PREFIX="release/stg/"
+RELEASE_PRODUCTION_PREFIX="release/prod/"
+HOTFIX_STAGING_PREFIX="hotfix/stg/"
+HOTFIX_PRODUCTION_PREFIX="hotfix/prod/"
+
+# =============================================================================
+# WORKFLOW BEHAVIOR
+# =============================================================================
+
+# Merge conflict strategy.
+# Options:
+#   interactive   – stop and let user resolve (recommended)
+#   prefer-ours   – automatically favour the current branch
+#   prefer-theirs – automatically favour the incoming branch
+CONFLICT_STRATEGY="interactive"
+
+# =============================================================================
+# MULTI-PLATFORM (optional — leave blank for single-environment projects)
+# =============================================================================
+
+# Enable platform-specific tags.
+# true  → versions include platform prefix  (android-1.2.3-rc-01)
+# false → legacy single-environment mode    (1.2.3-rc-01)
+PLATFORM_SPECIFIC_TAGS=false
+
+# All supported platforms (space-separated).  Required when true.
+# Example: PLATFORMS="android ios web"
+PLATFORMS=""
+
+# Shared/common platforms — changes propagate to all dependent platforms.
+# Example: COMMON_PLATFORMS="shared core"
+COMMON_PLATFORMS=""
+
+# Independent platforms — changes stay within the same platform.
+# Example: INDEPENDENT_PLATFORMS="android ios web"
+INDEPENDENT_PLATFORMS=""
+
+# =============================================================================
+# GIT HOOKS — COMMIT MESSAGE RULES
+# =============================================================================
+
+# Granular hook control (requires HOOKS_ENABLED=true in global config).
+HOOK_COMMIT_MSG_ENABLED=true
+
+# Allowed prefixes and their descriptions.
+COMMIT_PREFIXES="wip|fix|feat|enhance|cmd"
+COMMIT_PREFIX_DESCRIPTIONS="Work In Progress|Bug Fixes|New Features|Enhancements|Commands"
+
+# Platform prefix format used in commit messages when multi-platform is active.
+COMMIT_PLATFORM_PREFIX_FORMAT="[platform]"
+
+# Commit message validation rules.
+REQUIRE_CAPITAL_START=true     # Description must start with a capital letter.
+MIN_WORD_COUNT=3               # Minimum words in description (excluding cmd:).
+CMD_MIN_WORD_COUNT=2           # Minimum words for cmd: prefix.
+
+# =============================================================================
+# CHANGELOG & RELEASE NOTES
+# =============================================================================
+
+# Prefixes to exclude from QA_NOTES.md (staging).  Default: empty (include all).
+CHANGELOG_QA_EXCLUDED_PREFIXES=""
+
+# Prefixes to exclude from RELEASE_NOTES.md (production).
+CHANGELOG_RELEASE_EXCLUDED_PREFIXES="wip|cmd"
+
+# [DEPRECATED / DISABLED] Changelog Webhook delivery is an incomplete feature
+# pending a full refactor. These keys are recognised but have no effect.
+# CHANGELOG_WEBHOOK_URL=""
+# CHANGELOG_WEBHOOK_AUTH=""
+# CHANGELOG_WEBHOOK_FORMAT="raw"
+
+# =============================================================================
+# EXAMPLE CONFIGURATIONS
+# =============================================================================
+
+# Example 1: Different branch names (GitHub-flow style)
+# PRODUCTION_BRANCH="main"
+# STAGING_BRANCH="preprod"
+# DEVELOP_BRANCH="dev"
+
+# Example 2: Custom tag formats
+# STAGING_TAG_PREFIX="test/v"
+# PRODUCTION_TAG_PREFIX="prod/v"
+
+# Example 3: Multi-platform (KMP project)
+# PLATFORM_SPECIFIC_TAGS=true
+# PLATFORMS="shared android ios"
+# COMMON_PLATFORMS="shared"
+# INDEPENDENT_PLATFORMS="android ios"
+# # Version format: shared-1.2.3-rc-01 / android-2.0.1-rc-02 / ios-2.0.1-rc-02
+
+# Example 4: Custom branch prefixes
+# RELEASE_STAGING_PREFIX="release/test/"
+# RELEASE_PRODUCTION_PREFIX="release/prod/"
+# HOTFIX_STAGING_PREFIX="hotfix/test/"
+# HOTFIX_PRODUCTION_PREFIX="hotfix/prod/"

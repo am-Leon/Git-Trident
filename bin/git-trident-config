@@ -1,0 +1,262 @@
+#!/bin/bash
+# Git Trident Tools — Config management
+# Subcommands:
+#   init    – interactively scaffold ./git-trident-config for a new project
+#   show    – display active configuration (alias for 'git trident version config')
+#   help    – show this help
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source common utilities
+source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
+source "$SCRIPT_DIR/../lib/git-trident-help.sh"
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+_ask() {
+    # _ask <prompt> <default>  — prints the answer
+    local prompt="$1"
+    local default="$2"
+    local answer
+    if [[ -n "$default" ]]; then
+        read -rp "$(echo -e "${BLUE}?${NC} $prompt [${default}]: ")" answer
+        echo "${answer:-$default}"
+    else
+        read -rp "$(echo -e "${BLUE}?${NC} $prompt: ")" answer
+        echo "$answer"
+    fi
+}
+
+_ask_bool() {
+    # _ask_bool <prompt> <default true|false>
+    local prompt="$1"
+    local default="${2:-false}"
+    local hint
+    [[ "$default" == "true" ]] && hint="Y/n" || hint="y/N"
+    local answer
+    read -rp "$(echo -e "${BLUE}?${NC} $prompt [$hint]: ")" answer
+    answer="${answer:-$default}"
+    [[ "$answer" =~ ^[Yy] ]] && echo "true" || echo "false"
+}
+
+_write_line() { echo "$1" >> "$OUTPUT_FILE"; }
+
+# =============================================================================
+# INIT COMMAND
+# =============================================================================
+
+cmd_init() {
+    local OUTPUT_FILE="./git-trident-config"
+
+    log_info "🛠  GIT TRIDENT — Project Config Init"
+    log_info "========================================"
+    log_empty ""
+
+    # Safety: don't overwrite unless confirmed
+    if [[ -f "$OUTPUT_FILE" ]]; then
+        log_warn "A project config already exists: $OUTPUT_FILE"
+        if ! confirm_action "Overwrite it?"; then
+            log_info "Aborted. Existing config preserved."
+            exit 0
+        fi
+        # Back it up first
+        cp "$OUTPUT_FILE" "${OUTPUT_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+        log_info "Backed up existing config."
+    fi
+
+    log_info "Answer the prompts below (press Enter to accept the default)."
+    log_empty ""
+
+    # ── Branch names ──────────────────────────────────────────────────────────
+    log_info "── Branches ──────────────────────────────────"
+    local prod_branch;   prod_branch=$(_ask   "Production branch name"    "production")
+    local staging_branch; staging_branch=$(_ask "Staging branch name"      "staging")
+    local develop_branch; develop_branch=$(_ask "Develop branch name"      "develop")
+
+    # ── Remote ───────────────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Remote ────────────────────────────────────"
+    local remote; remote=$(_ask "Remote name" "origin")
+
+    # ── Tag prefixes ──────────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Tag prefixes ──────────────────────────────"
+    local stag_prefix; stag_prefix=$(_ask "Staging tag prefix"    "staging/")
+    local prod_prefix; prod_prefix=$(_ask "Production tag prefix" "production/")
+    local rc_suffix;   rc_suffix=$(_ask   "RC suffix"             "-rc-")
+
+    # ── Multi-platform ────────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Multi-platform ────────────────────────────"
+    local platform_mode; platform_mode=$(_ask_bool "Enable platform-specific tags (KMP/multi-platform)?" "false")
+
+    local platforms="" common_platforms="" independent_platforms=""
+    if [[ "$platform_mode" == "true" ]]; then
+        platforms=$(_ask        "All platforms (space-separated, e.g. shared android ios)" "")
+        common_platforms=$(_ask "Common platforms (e.g. shared)"                           "")
+        independent_platforms=$(_ask "Independent platforms (e.g. android ios)"           "")
+    fi
+
+    # ── Conflict strategy ─────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Workflow ──────────────────────────────────"
+    log_info "   Conflict strategy options: interactive | prefer-ours | prefer-theirs"
+    local conflict; conflict=$(_ask "Conflict strategy" "interactive")
+
+    # ── Branch prefixes ───────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Branch prefixes (internal) ────────────────"
+    local rel_stag; rel_stag=$(_ask "Staging release prefix"    "release/stg/")
+    local rel_prod; rel_prod=$(_ask "Production release prefix"  "release/prod/")
+    local hf_stag;  hf_stag=$(_ask  "Staging hotfix prefix"     "hotfix/stg/")
+    local hf_prod;  hf_prod=$(_ask  "Production hotfix prefix"  "hotfix/prod/")
+
+    # ── Changelog ─────────────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Changelog ─────────────────────────────────"
+    local qa_excl;   qa_excl=$(_ask   "QA excluded prefixes (pipe-separated)"      "")
+    local rel_excl;  rel_excl=$(_ask  "Release excluded prefixes (pipe-separated)" "wip|cmd")
+
+    # ── Hooks ─────────────────────────────────────────────────────────────────
+    log_empty ""
+    log_info "── Commit-message hook rules ──────────────────"
+    local hook_commit; hook_commit=$(_ask_bool "Enable commit-msg hook?" "true")
+    local prefixes;    prefixes=$(_ask    "Commit prefixes (pipe-separated)" "wip|fix|feat|enhance|cmd")
+    local prefix_desc; prefix_desc=$(_ask "Prefix descriptions (pipe-separated)" \
+                                          "Work In Progress|Bug Fixes|New Features|Enhancements|Commands")
+    local cap_start;   cap_start=$(_ask_bool "Require capital start in commit description?" "true")
+    local min_words;   min_words=$(_ask   "Minimum word count in description" "3")
+    local cmd_words;   cmd_words=$(_ask   "Minimum word count for cmd: prefix"  "2")
+
+    # ── Write the file ────────────────────────────────────────────────────────
+    log_empty ""
+    log_info "Writing $OUTPUT_FILE …"
+
+    cat > "$OUTPUT_FILE" <<EOF
+# =============================================================================
+# Git Trident Tools — Project Configuration
+# Generated by: git trident config init  ($(date '+%Y-%m-%d %H:%M'))
+# =============================================================================
+# IMPORTANT: Commit this file to git — teammates get your settings automatically.
+# Global/machine settings (AUTO_PUSH, DEBUG, HOOKS_ENABLED…) live in:
+#   ~/.git-trident-config   (never committed)
+# =============================================================================
+
+# =============================================================================
+# REQUIRED — BRANCH NAMES
+# =============================================================================
+PRODUCTION_BRANCH="${prod_branch}"
+STAGING_BRANCH="${staging_branch}"
+DEVELOP_BRANCH="${develop_branch}"
+
+# =============================================================================
+# REQUIRED — TAG PREFIXES
+# =============================================================================
+STAGING_TAG_PREFIX="${stag_prefix}"
+PRODUCTION_TAG_PREFIX="${prod_prefix}"
+STAGING_TAG_SUFFIX="${rc_suffix}"
+
+# =============================================================================
+# REQUIRED — REMOTE
+# =============================================================================
+REMOTE="${remote}"
+
+# =============================================================================
+# BRANCH PREFIXES
+# =============================================================================
+RELEASE_STAGING_PREFIX="${rel_stag}"
+RELEASE_PRODUCTION_PREFIX="${rel_prod}"
+HOTFIX_STAGING_PREFIX="${hf_stag}"
+HOTFIX_PRODUCTION_PREFIX="${hf_prod}"
+
+# =============================================================================
+# WORKFLOW
+# =============================================================================
+CONFLICT_STRATEGY="${conflict}"
+
+# =============================================================================
+# MULTI-PLATFORM
+# =============================================================================
+PLATFORM_SPECIFIC_TAGS=${platform_mode}
+PLATFORMS="${platforms}"
+COMMON_PLATFORMS="${common_platforms}"
+INDEPENDENT_PLATFORMS="${independent_platforms}"
+
+# =============================================================================
+# COMMIT-MESSAGE HOOK RULES
+# =============================================================================
+HOOK_COMMIT_MSG_ENABLED=${hook_commit}
+COMMIT_PREFIXES="${prefixes}"
+COMMIT_PREFIX_DESCRIPTIONS="${prefix_desc}"
+COMMIT_PLATFORM_PREFIX_FORMAT="[platform]"
+REQUIRE_CAPITAL_START=${cap_start}
+MIN_WORD_COUNT=${min_words}
+CMD_MIN_WORD_COUNT=${cmd_words}
+
+# =============================================================================
+# CHANGELOG & RELEASE NOTES
+# =============================================================================
+CHANGELOG_QA_EXCLUDED_PREFIXES="${qa_excl}"
+CHANGELOG_RELEASE_EXCLUDED_PREFIXES="${rel_excl}"
+# [DEPRECATED / DISABLED] Changelog webhook delivery is not a completed feature and needs a refactor.
+# CHANGELOG_WEBHOOK_URL=""
+# CHANGELOG_WEBHOOK_AUTH=""
+# CHANGELOG_WEBHOOK_FORMAT="raw"
+EOF
+
+    log_empty ""
+    log_info "✅ Created: $OUTPUT_FILE"
+    log_empty ""
+    log_info "Next steps:"
+    log_info "  1. Review and tweak the file if needed"
+    log_info "  2. git add git-trident-config"
+    log_info "  3. git commit -m \"cmd: Add git-trident project config\""
+
+    # Warn if any global-only keys accidentally ended up in the file
+    _warn_global_only_keys_in_project_config "$OUTPUT_FILE"
+}
+
+# =============================================================================
+# SHOW COMMAND (alias for 'git trident version config')
+# =============================================================================
+
+cmd_show() {
+    execute_script() {
+        local script_path="$SCRIPT_DIR/$1"
+        shift
+        if [[ -f "$script_path" ]]; then
+            exec "$script_path" "$@"
+        fi
+    }
+    exec "$SCRIPT_DIR/git-trident-version" "config"
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    local subcommand="${1:-}"
+    shift || true
+
+    case "$subcommand" in
+        "init")
+            cmd_init "$@"
+            ;;
+        "show"|"")
+            cmd_show "$@"
+            ;;
+        "--help"|"-h"|"help")
+            show_config_help
+            ;;
+        *)
+            log_error "Unknown config subcommand: $subcommand"
+            log_error "Usage: git trident config [init|show|help]"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

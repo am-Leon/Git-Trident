@@ -1,0 +1,654 @@
+#!/bin/bash
+# Git Trident Tools - Custom workflow management
+# Usage: git trident <command> [args...]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source common utilities - skip auto-init for utility commands
+if [[ "$1" =~ ^(help|--help|-h|version|config|hooks)$ ]]; then
+    source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
+else
+    source "$SCRIPT_DIR/../lib/git-trident-common.sh"
+fi
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+source "$SCRIPT_DIR/../lib/git-trident-help.sh"
+
+# =============================================================================
+# ARGUMENT PARSING UTILITIES
+# =============================================================================
+
+has_help_flag() {
+    local args=("$@")
+    for arg in "${args[@]}"; do
+        if [[ "$arg" == "--help" || "$arg" == "-h" || "$arg" == "help" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+has_help_flag_in_remaining_args() {
+    local args=("$@")
+    # Skip the first argument (command name) and check the rest
+    for ((i=1; i<${#args[@]}; i++)); do
+        local arg="${args[i]}"
+        if [[ "$arg" == "--help" || "$arg" == "-h" || "$arg" == "help" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# =============================================================================
+# VERSION VALIDATION FOR COMMANDS
+# =============================================================================
+
+validate_command_version() {
+    local command="$1"
+    local version="$2"
+    
+    if [ -z "$version" ]; then
+        return 0  # Some commands don't require version
+    fi
+    
+    # Check if we're in platform-specific mode
+    if is_platform_specific_mode; then
+        # Extract platform from version
+        local platform=$(extract_platform_from_version "$version")
+
+        if [ -z "$platform" ]; then
+            log_error "Invalid version format for platform-specific mode: $version"
+            log_info "Expected: platform-MAJOR.MINOR.PATCH"
+            log_info "Example: android-1.2.3"
+            log_info "Supported platforms: $PLATFORMS"
+
+            # Show platform classification if available
+            if [ -n "$COMMON_PLATFORMS" ] || [ -n "$INDEPENDENT_PLATFORMS" ]; then
+                log_info "Common platforms: $COMMON_PLATFORMS"
+                log_info "Independent platforms: $INDEPENDENT_PLATFORMS"
+                log_info "Propagation rules:"
+                log_info "  • Common → Independent: Always propagate"
+                log_info "  • Independent → Other: Never propagate"
+            fi
+
+            return 1
+        fi
+
+        # Validate platform
+        if ! validate_platform_parameter "$platform" "version '$version'"; then
+            # Show platform classification in error message
+            if [ -n "$COMMON_PLATFORMS" ] || [ -n "$INDEPENDENT_PLATFORMS" ]; then
+                log_info "Common platforms: $COMMON_PLATFORMS"
+                log_info "Independent platforms: $INDEPENDENT_PLATFORMS"
+            fi
+            return 1
+        fi
+    else
+        # Legacy mode - validate simple version format
+        if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            log_error "Invalid version format for legacy mode: $version"
+            log_info "Expected: MAJOR.MINOR.PATCH"
+            log_info "Example: 1.2.3"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# EXECUTION UTILITIES
+# =============================================================================
+
+execute_script() {
+    local script_name="$1"
+    local args=("${@:2}")  # All arguments after the first
+
+    local script_path="$SCRIPT_DIR/$script_name"
+
+    if [ -f "$script_path" ]; then
+        exec "$script_path" "${args[@]}"
+    else
+        log_error "Script not found: $script_path"
+        exit 1
+    fi
+}
+
+# =============================================================================
+# PRODUCTION COMMAND HANDLERS
+# =============================================================================
+
+handle_production_release_start() {
+    local version="$1"
+
+    if [ -z "$version" ]; then
+        log_error "Version required for production release"
+        log_info "Usage: git trident production release start <version>"
+        log_info "Use 'git trident production release --help' for detailed help"
+        exit 1
+    fi
+
+    # Validate version format
+    if ! validate_command_version "production-release-start" "$version"; then
+        exit 1
+    fi
+
+    source "$SCRIPT_DIR/../lib/git-trident-production.sh"
+    production_release_start "$version"
+}
+
+handle_production_release_finish() {
+    local version="$1"
+
+    if [ -z "$version" ]; then
+        log_error "Version required for production release"
+        log_info "Usage: git trident production release finish <version>"
+        log_info "Use 'git trident production release --help' for detailed help"
+        exit 1
+    fi
+
+    # Validate version format
+    if ! validate_command_version "production-release-finish" "$version"; then
+        exit 1
+    fi
+
+    source "$SCRIPT_DIR/../lib/git-trident-production.sh"
+    production_release_finish "$version"
+}
+
+handle_production_hotfix_start() {
+    local platform="${1:-}"
+
+    # Handle platform-specific vs legacy mode
+    if is_platform_specific_mode; then
+        # Platform-specific mode: require and validate platform parameter
+        if ! validate_platform_parameter "$platform" "production hotfix start"; then
+            log_info "Usage: git trident production hotfix start <platform>"
+            log_info "Example: git trident production hotfix start android"
+            log_info "Supported platforms: $PLATFORMS"
+
+            # Show platform classification
+            if [ -n "$COMMON_PLATFORMS" ] || [ -n "$INDEPENDENT_PLATFORMS" ]; then
+                log_info "Common platforms: $COMMON_PLATFORMS"
+                log_info "Independent platforms: $INDEPENDENT_PLATFORMS"
+            fi
+
+            exit 1
+        fi
+
+        # Call platform-specific hotfix start
+        source "$SCRIPT_DIR/../lib/git-trident-production.sh"
+        production_hotfix_start "$platform"
+    else
+        # Legacy mode: no parameters
+        if [ -n "$platform" ]; then
+            log_error "Production hotfix start does not take parameters in legacy mode"
+            log_info "Usage: git trident production hotfix start"
+            log_info "Use 'git trident production hotfix --help' for detailed help"
+            exit 1
+        fi
+        source "$SCRIPT_DIR/../lib/git-trident-production.sh"
+        production_hotfix_start
+    fi
+}
+
+handle_production_hotfix_finish() {
+    # In both modes, no parameters for finish
+    if [ -n "$1" ]; then
+        log_error "Production hotfix finish does not take parameters"
+        log_info "Usage: git trident production hotfix finish"
+        log_info "Use 'git trident production hotfix --help' for detailed help"
+        exit 1
+    fi
+    
+    source "$SCRIPT_DIR/../lib/git-trident-production.sh"
+    production_hotfix_finish
+}
+
+handle_production_changelog() {
+    local version="${1:-}"
+
+    if [ -z "$version" ]; then
+        log_error "Version required for production changelog"
+        log_info "Usage: git trident production changelog <version>"
+        log_info "Use 'git trident production changelog --help' for detailed help"
+        exit 1
+    fi
+
+    # Validate version format
+    if ! validate_command_version "changelog-generation" "$version"; then
+        exit 1
+    fi
+
+    execute_script "git-trident-changelog-generation" "production" "$version"
+}
+
+# =============================================================================
+# PRODUCTION COMMAND DISPATCHER
+# =============================================================================
+
+dispatch_production_command() {
+    local args=("$@")
+
+    # Check for help flag in any position (excluding the command itself)
+    if has_help_flag_in_remaining_args "${args[@]}"; then
+        show_production_help "${args[0]}"
+        return 0
+    fi
+
+    local command="${args[0]:-}"
+    local action="${args[1]:-}"
+    local param1="${args[2]:-}"  # Could be version OR platform
+
+    case "$command" in
+        "release")
+            case "$action" in
+                "start")
+                    handle_production_release_start "$param1"
+                    ;;
+                "finish")
+                    handle_production_release_finish "$param1"
+                    ;;
+                "")
+                    show_production_help "release"
+                    ;;
+                *)
+                    log_error "Unknown action: $action"
+                    log_info "Run 'git trident production release --help' for available actions"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        "hotfix")
+            case "$action" in
+                "start")
+                    handle_production_hotfix_start "$param1"
+                    ;;
+                "finish")
+                    handle_production_hotfix_finish "$param1"
+                    ;;
+                "")
+                    show_production_help "hotfix"
+                    ;;
+                *)
+                    log_error "Unknown action: $action"
+                    log_info "Run 'git trident production hotfix --help' for available actions"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        "changelog")
+            handle_production_changelog "${args[@]:1}"
+            ;;
+        ""|"--help"|"help"|"-h")
+            show_production_help
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            log_info "Run 'git trident production --help' for available commands"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# STAGING COMMAND HANDLERS
+# =============================================================================
+
+handle_staging_release_start() {
+    local version="$1"
+    local from_commit="$2"
+    
+    if [ -z "$version" ]; then
+        log_error "Version required for staging release"
+        log_info "Usage: git trident staging release start <version> [from_commit]"
+        log_info "Use 'git trident staging release --help' for detailed help"
+        exit 1
+    fi
+    
+    # Validate version format
+    if ! validate_command_version "staging-release-start" "$version"; then
+        exit 1
+    fi
+    
+    source "$SCRIPT_DIR/../lib/git-trident-staging.sh"
+    staging_release_start "$version" "$from_commit"
+}
+
+handle_staging_release_finish() {
+    local version="$1"
+    
+    if [ -z "$version" ]; then
+        log_error "Version required for staging release"
+        log_info "Usage: git trident staging release finish <version>"
+        log_info "Use 'git trident staging release --help' for detailed help"
+        exit 1
+    fi
+    
+    # Validate version format
+    if ! validate_command_version "staging-release-finish" "$version"; then
+        exit 1
+    fi
+    
+    source "$SCRIPT_DIR/../lib/git-trident-staging.sh"
+    staging_release_finish "$version"
+}
+
+handle_staging_hotfix_start() {
+    local version="$1"
+    
+    if [ -z "$version" ]; then
+        log_error "Version required for staging hotfix"
+        log_info "Usage: git trident staging hotfix start <version>"
+        log_info "Use 'git trident staging hotfix --help' for detailed help"
+        exit 1
+    fi
+    
+    # Validate version format
+    if ! validate_command_version "staging-hotfix-start" "$version"; then
+        exit 1
+    fi
+    
+    source "$SCRIPT_DIR/../lib/git-trident-staging.sh"
+    staging_hotfix_start "$version"
+}
+
+handle_staging_hotfix_finish() {
+    local version="$1"
+    
+    if [ -z "$version" ]; then
+        log_error "Version required for staging hotfix"
+        log_info "Usage: git trident staging hotfix finish <version>"
+        log_info "Use 'git trident staging hotfix --help' for detailed help"
+        exit 1
+    fi
+    
+    # Validate version format
+    if ! validate_command_version "staging-hotfix-finish" "$version"; then
+        exit 1
+    fi
+    
+    source "$SCRIPT_DIR/../lib/git-trident-staging.sh"
+    staging_hotfix_finish "$version"
+}
+
+handle_staging_sync_tags() {
+    local version="$1"
+    
+    if [ -z "$version" ]; then
+        log_error "Version required for staging sync-tags"
+        log_info "Usage: git trident staging sync-tags <version>"
+        log_info "Use 'git trident staging sync-tags --help' for detailed help"
+        exit 1
+    fi
+    
+    # Validate version format
+    if ! validate_command_version "staging-sync-tags" "$version"; then
+        exit 1
+    fi
+    
+    execute_script "git-trident-staging-sync-tags" "${@}"
+}
+
+handle_staging_changelog() {
+    local version="${1:-}"
+
+    if [ -z "$version" ]; then
+        log_error "Version required for staging changelog"
+        log_info "Usage: git trident staging changelog <version>"
+        log_info "Use 'git trident staging changelog --help' for detailed help"
+        exit 1
+    fi
+    
+    # Validate version format
+    if ! validate_command_version "changelog-generation" "$version"; then
+        exit 1
+    fi
+    
+    execute_script "git-trident-changelog-generation" "staging" "$version"
+}
+
+# =============================================================================
+# STAGING COMMAND DISPATCHER
+# =============================================================================
+
+dispatch_staging_command() {
+    local args=("$@")
+
+    # Check for help flag in any position (excluding the command itself)
+    if has_help_flag_in_remaining_args "${args[@]}"; then
+        show_staging_help "${args[0]}"
+        return 0
+    fi
+
+    local command="${args[0]:-}"
+    local action="${args[1]:-}"
+    local version="${args[2]:-}"
+    local from_commit="${args[3]:-}"
+
+    case "$command" in
+        "release")
+            case "$action" in
+                "start")
+                    handle_staging_release_start "$version" "$from_commit"
+                    ;;
+                "finish")
+                    handle_staging_release_finish "$version"
+                    ;;
+                "")
+                    show_staging_help "release"
+                    ;;
+                *)
+                    log_error "Unknown action: $action"
+                    log_info "Run 'git trident staging release --help' for available actions"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        "hotfix")
+            case "$action" in
+                "start")
+                    handle_staging_hotfix_start "$version"
+                    ;;
+                "finish")
+                    handle_staging_hotfix_finish "$version"
+                    ;;
+                "")
+                    show_staging_help "hotfix"
+                    ;;
+                *)
+                    log_error "Unknown action: $action"
+                    log_info "Run 'git trident staging hotfix --help' for available actions"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        "sync-tags")
+            handle_staging_sync_tags "${args[@]:1}"
+            ;;
+        "changelog")
+            handle_staging_changelog "${args[@]:1}"
+            ;;
+        ""|"--help"|"help"|"-h")
+            show_staging_help
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            log_info "Run 'git trident staging --help' for available commands"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# UTILITY COMMAND HANDLERS
+# =============================================================================
+
+handle_push_all() {
+    execute_script "git-trident-push-all" "$@"
+}
+
+handle_verify_sync() {
+    execute_script "git-trident-verify-sync" "$@"
+}
+
+handle_status() {
+    execute_script "git-trident-verify-sync" "--brief"
+}
+
+handle_tags() {
+    local environment="${1:-}"
+    case "$environment" in
+        "staging")
+            show_available_tags "staging"
+            ;;
+        "production")
+            show_available_tags "production"
+            ;;
+        "")
+            log_info "Usage: git trident tags <environment>"
+            log_info "Environments: staging, production"
+            log_info "Use 'git trident tags --help' for detailed help"
+            ;;
+        *)
+            log_error "Unknown environment: $environment"
+            log_info "Usage: git trident tags <environment>"
+            log_info "Environments: staging, production"
+            ;;
+    esac
+}
+
+handle_version() {
+    execute_script "git-trident-version" "$@"
+}
+
+handle_cleanup() {
+    execute_script "git-trident-cleanup" "$@"
+}
+
+handle_hooks() {
+    execute_script "git-trident-hooks" "$@"
+}
+
+handle_config() {
+    execute_script "git-trident-config" "$@"
+}
+
+# =============================================================================
+# UTILITY COMMAND DISPATCHER
+# =============================================================================
+
+dispatch_utility_command() {
+    local command="$1"
+    shift
+    local args=("$@")
+
+    # Check for help flag in any position (excluding the command itself)
+    if has_help_flag "${args[@]}"; then
+        show_utility_help "$command"
+        return 0
+    fi
+
+    case "$command" in
+        "push-all")
+            handle_push_all "${args[@]}"
+            ;;
+        "verify-sync")
+            handle_verify_sync "${args[@]}"
+            ;;
+        "status")
+            handle_status "${args[@]}"
+            ;;
+        "tags")
+            handle_tags "${args[@]}"
+            ;;
+        "version")
+            handle_version "${args[@]}"
+            ;;
+        "cleanup")
+            handle_cleanup "${args[@]}"
+            ;;
+        "hooks")
+            handle_hooks "${args[@]}"
+            ;;
+        "config")
+            handle_config "${args[@]}"
+            ;;
+
+        "help"|"--help"|-h)
+            show_main_help
+            ;;
+        "")
+            show_main_help
+            ;;
+        *)
+            log_error "Unknown utility command: $command"
+            log_info "Run 'git trident --help' to see all available commands"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# PRE-OPERATION CHECKS DISPATCHER
+# =============================================================================
+
+run_pre_operation_checks() {
+    local namespace="$1"
+    
+    case "$namespace" in
+        "production"|"staging"|"push-all"|"verify-sync"|"status"|"tags"|"cleanup")
+            if ! pre_operation_checks "$namespace"; then
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+# =============================================================================
+# MAIN DISPATCHER
+# =============================================================================
+
+main() {
+    local args=("$@")
+
+    # Show help if no arguments
+    if [ $# -eq 0 ]; then
+        show_main_help
+        exit 0
+    fi
+
+    local namespace="${args[0]}"
+
+    # Special case: if help is requested, source help.sh directly
+    if [[ "$namespace" == "--help" || "$namespace" == "-h" || "$namespace" == "help" ]] ||
+       [[ "${args[0]}" == "--help" || "${args[0]}" == "-h" ]]; then
+        show_main_help
+        exit 0
+    fi
+
+    shift
+    local remaining_args=("$@")
+
+    # Run pre-operation checks for commands that need git repo
+    run_pre_operation_checks "$namespace"
+
+    case "$namespace" in
+        "production")
+            dispatch_production_command "${remaining_args[@]}"
+            ;;
+        "staging")
+            dispatch_staging_command "${remaining_args[@]}"
+            ;;
+        "push-all"|"verify-sync"|"status"|"tags"|"version"|"help"|"cleanup"|"hooks"|"config")
+            dispatch_utility_command "$namespace" "${remaining_args[@]}"
+            ;;
+        *)
+            log_error "Unknown command: $namespace"
+            log_info "Run 'git trident --help' to see all available commands"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

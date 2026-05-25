@@ -1,0 +1,710 @@
+#!/bin/bash
+# Git Trident Tools Version Management
+# Enhanced with platform-specific diagnostics and advanced analytics
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Suppress validation errors for diagnostic commands
+export SUPPRESS_CONFIG_ERRORS=true
+
+# Source common utilities (skip auto-init)
+source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+
+# Explicitly load config now that errors are suppressed
+load_project_config >/dev/null 2>&1 || true
+
+# =============================================================================
+# VERSION INFORMATION DISPLAY
+# =============================================================================
+
+show_version_info() {
+    local version="${TRIDENT_VERSION:-unknown}"
+
+    # Banner
+    log_info "═══════════════════════════════════════════════════════════════"
+    log_info "                     GIT TRIDENT v$version                  "
+    log_info "═══════════════════════════════════════════════════════════════"
+    log_empty ""
+
+    # Core version information
+    log_info "📦 CORE INFORMATION"
+    log_info "   • Version:        $version"
+    log_info "   • Config Source:  $CONFIG_SOURCE"
+    log_info "   • Install Path:   $(dirname "$SCRIPT_DIR")"
+    log_info "   • Config Loaded:  $CONFIG_LOADED"
+    log_empty ""
+
+    # Git information
+    if command -v git >/dev/null 2>&1; then
+        local git_version=$(git --version | sed 's/git version //')
+        local git_flow_status=$(command -v git-trident >/dev/null 2>&1 && echo "✓ Installed" || echo "✗ Not installed")
+
+        log_info "🛠️  GIT ENVIRONMENT"
+        log_info "   • Git Version:      $git_version"
+        log_info "   • Git Trident:         $git_flow_status"
+        log_info "   • Git LFS:          $(command -v git-lfs >/dev/null 2>&1 && echo "✓ Installed" || echo "✗ Not installed")"
+        log_empty ""
+    fi
+
+    # Current project configuration
+    log_info "⚙️  PROJECT CONFIGURATION"
+    log_info "   • Production:     $PRODUCTION_BRANCH"
+    log_info "   • Staging:        $STAGING_BRANCH"
+    log_info "   • Develop:        $DEVELOP_BRANCH"
+    log_info "   • Remote:         $REMOTE"
+    log_info "   • Staging Tags:   $STAGING_TAG_PREFIX"
+    log_info "   • Production Tags: $PRODUCTION_TAG_PREFIX"
+    log_empty ""
+
+    # Platform-specific mode information
+    if is_platform_specific_mode; then
+        show_platform_specific_info
+    else
+    local suffix="$(get_rc_suffix)"
+        log_info "📟 LEGACY MODE"
+        log_info "   • Mode:          Single-environment"
+        log_info "   • Tag Format:    MAJOR.MINOR.PATCH[${suffix}XX]"
+        log_info "   • Example:       1.2.3${suffix}01"
+        log_empty ""
+    fi
+
+    # Workflow configuration
+    log_info "⚡ WORKFLOW CONFIGURATION"
+    log_info "   • Confirmations:  ${REQUIRE_CONFIRMATION:-true}"
+    log_info "   • Debug Mode:     ${DEBUG:-false}"
+    log_empty ""
+
+    # Release statistics if in a git repo
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        show_release_statistics
+    else
+        log_info "📈 RELEASE STATISTICS"
+        log_info "   • Status: Not in a git repository"
+        log_empty ""
+    fi
+
+    # System information
+    log_info "💻 SYSTEM INFORMATION"
+    log_info "   • Shell:          $(basename "$SHELL")"
+    log_info "   • Platform:       $(uname -s) $(uname -m)"
+    log_info "   • Bash Version:   ${BASH_VERSION}"
+    log_info "   • OS:             $(uname -o 2>/dev/null || echo "N/A")"
+    log_empty ""
+
+    # Security and behavior
+    log_info "🔐 SECURITY SETTINGS"
+    log_info "   • Clean Tree:     ${REQUIRE_CLEAN_WORKING_TREE:-true}"
+    log_info "   • Remote Check:   ${VALIDATE_REMOTE_CONNECTIVITY:-true}"
+    log_info "   • Conflict:       ${CONFLICT_STRATEGY:-interactive}"
+    log_empty ""
+
+    # Footer
+    log_info "═════════════════════════════════════════════════════════════════"
+}
+
+show_platform_specific_info() {
+    local suffix="$(get_rc_suffix)"
+    log_info "🌐 PLATFORM-SPECIFIC MODE"
+    log_info "   • Mode:          Multi-platform with classification"
+    log_info "   • Tag Format:    platform-MAJOR.MINOR.PATCH[${suffix}XX]"
+    log_info "   • Example:       android-1.2.3${suffix}01"
+    log_empty ""
+
+    if [ -n "${PLATFORMS:-}" ]; then
+        log_info "   📱 SUPPORTED PLATFORMS"
+        log_info "      • All: $PLATFORMS"
+
+        if [ -n "${COMMON_PLATFORMS:-}" ]; then
+            log_info "      • Common ⚡: $COMMON_PLATFORMS"
+            log_info "        → Propagates to all independent platforms"
+        fi
+
+        if [ -n "${INDEPENDENT_PLATFORMS:-}" ]; then
+            log_info "      • Independent 📍: $INDEPENDENT_PLATFORMS"
+            log_info "        → Changes stay within same platform"
+        fi
+        log_empty ""
+
+        # Show propagation matrix
+        if [ -n "${COMMON_PLATFORMS:-}" ] && [ -n "${INDEPENDENT_PLATFORMS:-}" ]; then
+            log_info "   🔄 PROPAGATION MATRIX"
+            for common in $COMMON_PLATFORMS; do
+                log_info "      • $common ⚡ → $INDEPENDENT_PLATFORMS"
+            done
+            for independent in $INDEPENDENT_PLATFORMS; do
+                log_info "      • $independent 📍 → $independent only"
+            done
+        fi
+    else
+        log_info "   ⚠️  No platforms configured"
+    fi
+    log_empty ""
+}
+
+show_release_statistics() {
+    log_info "📈 RELEASE STATISTICS"
+
+    # Production tags
+    local production_tags=$(git tag -l "${PRODUCTION_TAG_PREFIX}*" 2>/dev/null)
+    local production_count=$(echo "$production_tags" | wc -l | tr -d ' ')
+
+    # Staging tags
+    local staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)
+    local staging_count=$(echo "$staging_tags" | wc -l | tr -d ' ')
+
+    log_info "   • Production Releases: $production_count"
+    log_info "   • Staging Releases:    $staging_count"
+    log_info "   • Total Releases:      $((production_count + staging_count))"
+    log_empty ""
+
+    # Latest versions
+    if [ "$production_count" -gt 0 ]; then
+        local latest_prod=$(echo "$production_tags" | sort -V | tail -1)
+        log_info "   • Latest Production:  $(echo "$latest_prod" | sed "s|^${PRODUCTION_TAG_PREFIX}||")"
+    fi
+
+    if [ "$staging_count" -gt 0 ]; then
+        local latest_staging=$(echo "$staging_tags" | sort -V | tail -1)
+        log_info "   • Latest Staging:    $(echo "$latest_staging" | sed "s|^${STAGING_TAG_PREFIX}||")"
+    fi
+    log_empty ""
+
+    # Platform-specific statistics
+    if is_platform_specific_mode && [ -n "${PLATFORMS:-}" ]; then
+        log_info "   📊 PLATFORM DISTRIBUTION"
+
+        local total_platform_tags=0
+        for platform in $PLATFORMS; do
+            local platform_prod=$(git tag -l "${PRODUCTION_TAG_PREFIX}${platform}-*" 2>/dev/null | wc -l | tr -d ' ')
+            local platform_staging=$(git tag -l "${STAGING_TAG_PREFIX}${platform}-*" 2>/dev/null | wc -l | tr -d ' ')
+            local platform_total=$((platform_prod + platform_staging))
+            total_platform_tags=$((total_platform_tags + platform_total))
+
+            if [ "$platform_total" -gt 0 ]; then
+                local platform_type=$(get_platform_type "$platform")
+                local type_icon=""
+                [ "$platform_type" = "common" ] && type_icon="⚡"
+                [ "$platform_type" = "independent" ] && type_icon="📍"
+
+                log_info "      • $platform$type_icon: $platform_prod prod, $platform_staging staging"
+            fi
+        done
+
+        # Other tags (non-platform)
+        local other_tags=$((production_count + staging_count - total_platform_tags))
+        if [ "$other_tags" -gt 0 ]; then
+            log_info "      • other: $other_tags tags"
+        fi
+        log_empty ""
+    fi
+
+    # Branch information
+    log_info "   🌿 BRANCH STATUS"
+    local branches=("$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH")
+
+    for branch in "${branches[@]}"; do
+        if check_branch_exists "$branch"; then
+            local commit_count=$(git rev-list --count "$branch" 2>/dev/null || echo "N/A")
+            local last_commit=$(git log -1 --format="%h %s" "$branch" 2>/dev/null | cut -c1-40)
+
+            # Branch icon
+            local branch_icon="🌿"
+            [ "$branch" = "$STAGING_BRANCH" ] && branch_icon="🚧"
+            [ "$branch" = "$PRODUCTION_BRANCH" ] && branch_icon="🚀"
+
+            log_info "      • $branch_icon $branch: $commit_count commits"
+            log_info "          Last: $last_commit"
+        else
+            log_info "      • ❌ $branch: does not exist"
+        fi
+    done
+    log_empty ""
+}
+
+# =============================================================================
+# CONFIGURATION INFORMATION (ENHANCED)
+# =============================================================================
+
+show_config_info() {
+    log_info "⚙️  CONFIGURATION INFORMATION"
+    log_info "═════════════════════════════════════════════════════════════════"
+    log_empty ""
+
+    # Configuration sources — two-tier display
+    log_info "📁 CONFIGURATION SOURCE"
+    log_info "   • Active Config:  $CONFIG_SOURCE"
+    log_info "   • Validation:     $CONFIG_VALIDATION_MODE"
+    log_info "   • Status:         $CONFIG_LOADED"
+    log_empty ""
+
+    # Show each config tier explicitly
+    log_info "🔍 CONFIGURATION FILES"
+
+    local global_cfg="$HOME/.git-trident-config"
+    if [[ -f "$global_cfg" ]]; then
+        local file_age; file_age=$(get_file_age "$global_cfg" 2>/dev/null || echo "N/A")
+        local age_display=""
+        [[ "$file_age" != "N/A" ]] && age_display=" (modified ${file_age}s ago)"
+        log_info "   • ✅ GLOBAL  : $global_cfg$age_display"
+        log_info "        (machine-level: auto-push, security, debug, hooks)"
+    else
+        log_info "   • ❌ GLOBAL  : $global_cfg (not found — re-run installer)"
+    fi
+
+    local project_cfg_found=false
+    for pcfg in "./git-trident-config" "./.git-trident-config"; do
+        if [[ -f "$pcfg" ]]; then
+            local file_age; file_age=$(get_file_age "$pcfg" 2>/dev/null || echo "N/A")
+            local age_display=""
+            [[ "$file_age" != "N/A" ]] && age_display=" (modified ${file_age}s ago)"
+            log_info "   • ✅ PROJECT : $pcfg$age_display"
+            log_info "        (branch names, tag prefixes, platforms — commit to git)"
+            project_cfg_found=true
+            break
+        fi
+    done
+    [[ "$project_cfg_found" == "false" ]] && \
+        log_info "   • ⚠️  PROJECT : not found — using global defaults for project settings"
+    log_empty ""
+
+    # Core configuration
+    log_info "📋 CORE CONFIGURATION"
+    log_info "   • Production:     $PRODUCTION_BRANCH"
+    log_info "   • Staging:        $STAGING_BRANCH"
+    log_info "   • Develop:        $DEVELOP_BRANCH"
+    log_info "   • Remote:         $REMOTE"
+    log_info "   • Staging Prefix: $STAGING_TAG_PREFIX"
+    log_info "   • Prod Prefix:    $PRODUCTION_TAG_PREFIX"
+    log_info "   • RC Suffix:      $STAGING_TAG_SUFFIX"
+    log_empty ""
+
+    # Platform configuration
+    if is_platform_specific_mode; then
+        log_info "🌐 PLATFORM CONFIGURATION"
+        log_info "   • Mode:          Enabled"
+        log_info "   • Platforms:     $PLATFORMS"
+
+        if [ -n "$COMMON_PLATFORMS" ]; then
+            log_info "   • Common:        $COMMON_PLATFORMS ⚡"
+        fi
+
+        if [ -n "$INDEPENDENT_PLATFORMS" ]; then
+            log_info "   • Independent:   $INDEPENDENT_PLATFORMS 📍"
+        fi
+        log_empty ""
+    else
+        log_info "🌐 PLATFORM CONFIGURATION"
+        log_info "   • Mode:          Disabled (legacy)"
+        log_empty ""
+    fi
+
+    # Behavior configuration
+    log_info "⚡ BEHAVIOR CONFIGURATION"
+    log_info "   • Confirmations:  ${REQUIRE_CONFIRMATION:-not set}"
+    log_info "   • Auto Push:      ${AUTO_PUSH_ON_FINISH:-false}"
+    log_info "   • Cleanup Branch: ${DELETE_BRANCH_ON_FINISH:-true}"
+    log_info "   • Debug Mode:     ${DEBUG:-false}"
+    log_empty ""
+
+    # Branch prefixes
+    log_info "🌿 BRANCH PREFIXES"
+    log_info "   • Staging Release:  $RELEASE_STAGING_PREFIX"
+    log_info "   • Prod Release:     $RELEASE_PRODUCTION_PREFIX"
+    log_info "   • Staging Hotfix:   $HOTFIX_STAGING_PREFIX"
+    log_info "   • Prod Hotfix:      $HOTFIX_PRODUCTION_PREFIX"
+    log_empty ""
+
+    # Advanced settings
+    log_info "🔧 ADVANCED SETTINGS"
+    log_info "   • Clean Tree:     ${REQUIRE_CLEAN_WORKING_TREE:-true}"
+    log_info "   • Remote Check:   ${VALIDATE_REMOTE_CONNECTIVITY:-true}"
+    log_info "   • Cache Duration: ${REMOTE_TAG_CACHE_DURATION:-300}s"
+    log_info "   • Conflict Strat: ${CONFLICT_STRATEGY:-interactive}"
+    log_empty ""
+}
+
+# =============================================================================
+# ENVIRONMENT DIAGNOSTICS (ENHANCED)
+# =============================================================================
+
+show_environment_info() {
+    log_info "🔍 ENVIRONMENT DIAGNOSTICS"
+    log_info "═════════════════════════════════════════════════════════════════"
+    log_empty ""
+
+    # Git Trident Tools environment
+    log_info "📦 GIT TRIDENT ENVIRONMENT"
+    env | grep -i "GIT_FLOW\|GITFLOW" | sort | while read var; do
+        log_info "   • $var"
+    done
+    log_empty ""
+
+    # Git configuration
+    if command -v git >/dev/null 2>&1; then
+        log_info "🛠️  GIT CONFIGURATION"
+
+        # User info
+        local git_user=$(git config user.name 2>/dev/null || echo "Not set")
+        local git_email=$(git config user.email 2>/dev/null || echo "Not set")
+        log_info "   • User:          $git_user"
+        log_info "   • Email:         $git_email"
+
+        # Core settings
+        local autocrlf=$(git config core.autocrlf 2>/dev/null || echo "Not set")
+        local safecrlf=$(git config core.safecrlf 2>/dev/null || echo "Not set")
+        log_info "   • AutoCRLF:      $autocrlf"
+        log_info "   • SafeCRLF:      $safecrlf"
+
+        # Remote info
+        log_info "   • Remotes:       $(git remote | tr '\n' ' ')"
+        log_empty ""
+    fi
+
+    # System information
+    log_info "💻 SYSTEM INFORMATION"
+    log_info "   • Shell:          $(basename "$SHELL")"
+    log_info "   • Platform:       $(uname -s) $(uname -m)"
+    log_info "   • Bash Version:   ${BASH_VERSION}"
+    log_info "   • Terminal:       ${TERM:-not set}"
+    log_info "   • Script Dir:     $SCRIPT_DIR"
+    log_empty ""
+
+    # Path information
+    log_info "🛣️  PATH INFORMATION"
+    echo "$PATH" | tr ':' '\n' | grep -i "git\|bin" | head -10 | while read path; do
+        log_info "   • $path"
+    done
+    log_empty ""
+
+    # Tool availability
+    log_info "🔧 TOOL AVAILABILITY"
+    local tools=("git" "bash" "grep" "sed" "awk" "sort" "curl" "wget")
+    for tool in "${tools[@]}"; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            local version=$("$tool" --version 2>/dev/null | head -1 | cut -d' ' -f2- | cut -c1-30)
+            log_info "   • ✅ $tool: $version"
+        else
+            log_info "   • ❌ $tool: not found"
+        fi
+    done
+    log_empty ""
+}
+
+# =============================================================================
+# HEALTH CHECK (NEW)
+# =============================================================================
+
+perform_health_check() {
+    log_info "🏥 HEALTH CHECK"
+    log_info "═════════════════════════════════════════════════════════════════"
+    log_empty ""
+
+    local all_checks_passed=true
+
+    # 1. Git repository check
+    log_info "1. GIT REPOSITORY"
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        log_info "   • ✅ In a git repository"
+    else
+        log_info "   • ❌ Not in a git repository"
+        all_checks_passed=false
+    fi
+
+    # 2. Remote connectivity
+    log_info "2. REMOTE CONNECTIVITY"
+    if git ls-remote "$REMOTE" > /dev/null 2>&1; then
+        log_info "   • ✅ Can connect to remote: $REMOTE"
+    else
+        log_info "   • ❌ Cannot connect to remote: $REMOTE"
+        all_checks_passed=false
+    fi
+
+    # 3. Branch existence
+    log_info "3. BRANCHES"
+    local branches=("$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH")
+    for branch in "${branches[@]}"; do
+        if check_branch_exists "$branch"; then
+            log_info "   • ✅ $branch exists"
+        else
+            log_info "   • ⚠️  $branch does not exist"
+        fi
+    done
+
+    # 4. Working tree status
+    log_info "4. WORKING TREE"
+    if git diff-index --quiet HEAD --; then
+        log_info "   • ✅ Working tree is clean"
+    else
+        log_info "   • ⚠️  Working tree has uncommitted changes"
+    fi
+
+    # 5. Platform configuration
+    log_info "5. PLATFORM CONFIGURATION"
+    if is_platform_specific_mode; then
+        log_info "   • ✅ Platform-specific mode enabled"
+
+        # Validate platform lists
+        if [ -n "$PLATFORMS" ] && [ -n "$COMMON_PLATFORMS" ] && [ -n "$INDEPENDENT_PLATFORMS" ]; then
+            log_info "   • ✅ Platform lists configured"
+
+            # Check for duplicates
+            local duplicates_found=false
+            for platform in $COMMON_PLATFORMS; do
+                if echo " $INDEPENDENT_PLATFORMS " | grep -q " $platform "; then
+                    log_info "   • ❌ $platform in both common and independent"
+                    duplicates_found=true
+                    all_checks_passed=false
+                fi
+            done
+
+            if [ "$duplicates_found" = false ]; then
+                log_info "   • ✅ No duplicate platforms"
+            fi
+        else
+            log_info "   • ❌ Platform lists incomplete"
+            all_checks_passed=false
+        fi
+    else
+        log_info "   • ✅ Legacy mode (no platform configuration needed)"
+    fi
+
+    # 6. Tag prefix validation
+    log_info "6. TAG PREFIXES"
+    if [ -n "$STAGING_TAG_PREFIX" ] && [ -n "$PRODUCTION_TAG_PREFIX" ]; then
+        log_info "   • ✅ Tag prefixes configured"
+
+        # Check for conflicts
+        if [[ "$STAGING_TAG_PREFIX" == "$PRODUCTION_TAG_PREFIX"* ]] || \
+           [[ "$PRODUCTION_TAG_PREFIX" == "$STAGING_TAG_PREFIX"* ]]; then
+            log_info "   • ❌ Tag prefixes conflict (one is prefix of another)"
+            all_checks_passed=false
+        else
+            log_info "   • ✅ Tag prefixes don't conflict"
+        fi
+    else
+        log_info "   • ❌ Tag prefixes not configured"
+        all_checks_passed=false
+    fi
+
+    log_empty ""
+    log_info "═════════════════════════════════════════════════════════════════"
+
+    if [ "$all_checks_passed" = true ]; then
+        log_info "✅ ALL CHECKS PASSED - System is healthy"
+    else
+        log_warn "⚠️  SOME CHECKS FAILED - Review warnings above"
+    fi
+    log_empty ""
+}
+
+# =============================================================================
+# UPDATE CHECKING (ENHANCED)
+# =============================================================================
+
+check_for_updates() {
+    log_info "🔄 UPDATE CHECK"
+    log_info "═════════════════════════════════════════════════════════════════"
+    log_empty ""
+
+    local current_version="${TRIDENT_VERSION:-unknown}"
+    local apply="${1:-false}"
+
+    log_info "📊 CURRENT VERSION"
+    log_info "   • Version:       $current_version"
+    log_info "   • Path:          $SCRIPT_DIR"
+    log_empty ""
+
+    log_info "🔍 FETCHING LATEST VERSION FROM GITHUB..."
+    local response
+    response=$(curl -fsSL --connect-timeout 5 "${GITHUB_RELEASE_API}" 2>/dev/null || echo "")
+
+    local latest_tag=""
+    if [[ -n "$response" ]]; then
+        latest_tag=$(echo "$response" | grep -m1 '"tag_name":' | sed -E 's/.*"tag_name":\s*"(v?[0-9.]+)".*/\1/' | tr -d '"v,')
+    fi
+
+    if [[ -n "$latest_tag" ]]; then
+        local cur_clean=$(echo "$current_version" | tr -d '"v')
+        local new_clean=$(echo "$latest_tag" | tr -d '"v')
+
+        log_info "   • Latest Tag:    v$latest_tag"
+        log_empty ""
+
+        if [[ "$cur_clean" != "$new_clean" ]]; then
+            log_warn "   • 🚀 A new version is available: v$latest_tag"
+            log_empty ""
+
+            if [[ "$apply" == "true" ]]; then
+                log_step "Initiating auto-upgrade to v$latest_tag..."
+
+                # Check for curl
+                if ! command -v curl >/dev/null 2>&1; then
+                    log_error "curl is required to perform auto-upgrade."
+                    exit 1
+                fi
+
+                # Fetch and run the remote installer (which will pull the specified version)
+                export INSTALL_VERSION="v$latest_tag"
+                log_info "Downloading and executing remote installer..."
+
+                if curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh" | bash; then
+                    log_info "✅ Successfully upgraded to v$latest_tag!"
+                    exit 0
+                else
+                    log_error "❌ Upgrade failed."
+                    exit 1
+                fi
+            else
+                log_info "👉 To automatically install this update, run:"
+                log_info "     git trident version update --apply"
+                log_empty ""
+            fi
+        else
+            log_info "   • ✅ You are running the latest version (v$current_version)."
+            log_empty ""
+        fi
+    else
+        log_warn "   • ⚠️ Could not reach GitHub Releases API (offline or rate-limited)."
+        log_info "     You can check manually at: https://github.com/${GITHUB_REPO}"
+        log_empty ""
+    fi
+
+    # Version compatibility
+    log_info "📋 VERSION COMPATIBILITY"
+    log_info "   • Bash:          ${BASH_VERSION}"
+    log_info "   • Git:           $(git --version 2>/dev/null | sed 's/git version //' || echo "Not found")"
+    log_info "   • Platform:      $(uname -s) $(uname -m)"
+    log_empty ""
+
+    # Check for known issues
+    log_info "⚠️  KNOWN ISSUES"
+
+    # Check Bash version for associative arrays
+    if [[ "${BASH_VERSION%%.*}" -lt 4 ]]; then
+        log_warn "   • Bash $BASH_VERSION - No associative array support"
+        log_info "     Some features limited. Upgrade to Bash 4+ recommended."
+    else
+        log_info "   • ✅ Bash $BASH_VERSION - Full feature support"
+    fi
+
+    # Check for common tools
+    local missing_tools=""
+    for tool in git grep sed awk sort; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_tools="$missing_tools $tool"
+        fi
+    done
+
+    if [ -n "$missing_tools" ]; then
+        log_warn "   • Missing tools:$missing_tools"
+    else
+        log_info "   • ✅ All required tools available"
+    fi
+    log_empty ""
+
+    log_info "═════════════════════════════════════════════════════════════════"
+}
+
+# =============================================================================
+# ARGUMENT PARSING (ENHANCED)
+# =============================================================================
+
+parse_arguments() {
+    local command=""
+    APPLY_UPDATE=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            "check-update"|"update")
+                command="check-update"
+                ;;
+            "--apply"|"-a")
+                APPLY_UPDATE=true
+                ;;
+            "env"|"environment")
+                command="env"
+                ;;
+            "config")
+                command="config"
+                ;;
+            "health"|"health-check")
+                command="health"
+                ;;
+            "config-help")
+                command="config-help"
+                ;;
+            "--verbose"|"-v")
+                DEBUG=true
+                ;;
+            "--help"|"-h"|"help")
+                # Source help module if available
+                if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
+                    source "$SCRIPT_DIR/../lib/git-trident-help.sh"
+                    show_version_help
+                else
+                    log_error "Help module not found: git-trident-help.sh"
+                fi
+                exit 0
+                ;;
+            *)
+                # If it's an unrecognized option but we're parsing update, check if it's --apply
+                log_error "Unknown option: $1"
+                if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
+                    source "$SCRIPT_DIR/../lib/git-trident-help.sh"
+                    show_version_help
+                fi
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    PARSE_RESULT_COMMAND="$command"
+}
+
+# =============================================================================
+# MAIN FUNCTION
+# =============================================================================
+
+main() {
+    # Parse arguments
+    parse_arguments "$@"
+    local command="$PARSE_RESULT_COMMAND"
+
+    case "$command" in
+        "check-update")
+            check_for_updates "${APPLY_UPDATE:-false}"
+            ;;
+        "env")
+            show_environment_info
+            ;;
+        "config")
+            show_config_info
+            ;;
+        "health")
+            perform_health_check
+            ;;
+        "config-help")
+            # Source help.sh and show config help
+            if [ -f "$SCRIPT_DIR/../lib/git-trident-help.sh" ]; then
+                source "$SCRIPT_DIR/../lib/git-trident-help.sh"
+                show_config_help
+            else
+                log_error "Help module not found: git-trident-help.sh"
+                exit 1
+            fi
+            ;;
+        "")
+            # No command specified, show full version info
+            show_version_info
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            exit 1
+            ;;
+    esac
+}
+
+# Execute main function
+main "$@"

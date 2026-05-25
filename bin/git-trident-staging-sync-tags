@@ -1,0 +1,576 @@
+#!/bin/bash
+# Unified staging synchronization - handles both production and staging sources
+# Supports both single-environment and multi-platform modes with platform classification
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd)"
+
+# Source common utilities
+source "$LIB_DIR/git-trident-common.sh"
+source "$LIB_DIR/git-trident-version-utils.sh"
+
+# =============================================================================
+# DEPRECATED TAG VALIDATION (WITH PLATFORM SUPPORT)
+# =============================================================================
+
+validate_staging_tag_not_deprecated() {
+    local version="$1"
+    local production_tag="${PRODUCTION_TAG_PREFIX}${version}"
+
+    log_debug "Validating staging tag for version: $version"
+
+    # Check if this version has been released to production
+    if is_valid_tag "$production_tag"; then
+        log_error "❌ Staging version $version is DEPRECATED!"
+        log_info "This version has already been released to production: $production_tag"
+        log_info "Cannot sync from staging versions that are already in production."
+        log_info "Use the production version instead."
+        return 1
+    fi
+    
+    log_info "✅ Staging version $version is current (not in production)"
+    return 0
+}
+
+# =============================================================================
+# CONTEXT DETECTION WITH PLATFORM SUPPORT
+# =============================================================================
+
+detect_sync_context() {
+    local version="$1"
+
+    log_debug "Detecting sync context for version: $version"
+    
+    # Extract platform if in platform-specific mode
+    local platform=""
+    if is_platform_specific_mode; then
+        platform=$(extract_platform_from_version "$version")
+        if [ -n "$platform" ]; then
+            log_debug "Detected platform: $platform"
+            if ! validate_platform "$platform"; then
+                log_error "Invalid platform: $platform"
+                echo "unknown"
+                return 1
+            fi
+        fi
+    fi
+
+    # Check if version exists as production tag (WITH prefix)
+    local production_tag="${PRODUCTION_TAG_PREFIX}${version}"
+    if is_valid_tag "$production_tag"; then
+        log_debug "Found production tag: $production_tag"
+
+        # Source the production sync script
+        source "$LIB_DIR/git-trident-staging-sync-from-production.sh"
+
+        # Validate not deprecated
+        if validate_production_tag_not_deprecated "$version"; then
+            echo "production"
+            return 0
+        else
+            echo "unknown"
+            return 1
+        fi
+    fi
+
+    # For staging lookup, strip RC suffix if present
+    local base_version_for_lookup="$version"
+    local suffix="$(get_rc_suffix)"
+    if [[ "$version" =~ ^(.+)${suffix}[0-9]+$ ]]; then
+        base_version_for_lookup="${BASH_REMATCH[1]}"
+        log_debug "Stripped RC suffix, using base version: $base_version_for_lookup"
+    fi
+
+    # Check if version exists as staging base version
+    local staging_tags=$(get_staging_tags_for_version "$base_version_for_lookup")
+    if [ -n "$staging_tags" ]; then
+        log_debug "Found staging tags for version: $base_version_for_lookup"
+
+        # Validate not deprecated
+        if validate_staging_tag_not_deprecated "$base_version_for_lookup"; then
+            echo "staging"
+            return 0
+        else
+            echo "unknown"
+            return 1
+        fi
+    fi
+
+    # If we get here, the version doesn't exist in either context
+    log_debug "Version $version not found in production or staging"
+    echo "unknown"
+    return 1
+}
+
+show_context_debug_info() {
+    local version="$1"
+
+    log_debug "Debug info for version: $version"
+
+    # Check production with prefix
+    local production_tag="${PRODUCTION_TAG_PREFIX}${version}"
+    log_debug "Production tag check: $production_tag"
+    log_debug "Tag exists: $(is_valid_tag "$production_tag" && echo "YES" || echo "NO")"
+
+    # For staging lookup, strip RC suffix if present
+    local base_version_for_lookup="$version"
+    local suffix="$(get_rc_suffix)"
+    if [[ "$version" =~ ^(.+)${suffix}[0-9]+$ ]]; then
+        base_version_for_lookup="${BASH_REMATCH[1]}"
+    fi
+
+    # Check staging tags
+    local staging_tags=$(get_staging_tags_for_version "$base_version_for_lookup")
+    log_debug "Staging tags found: $(echo "$staging_tags" | wc -l)"
+    if [ -n "$staging_tags" ]; then
+        log_debug "Staging tags:"
+        echo "$staging_tags" | while read tag; do
+            log_debug "  - $tag"
+        done
+    fi
+}
+
+handle_ambiguous_version() {
+    local version="$1"
+    local check_only="$2"
+
+    log_warn "⚠️  Version $version could belong to multiple contexts:"
+
+    local production_tag="${PRODUCTION_TAG_PREFIX}${version}"
+    log_info "   - Production tag exists: $(is_valid_tag "$production_tag" && echo "YES" || echo "NO")"
+
+    local base_version_for_lookup="$version"
+    local suffix="$(get_rc_suffix)"
+    if [[ "$version" =~ ^(.+)${suffix}[0-9]+$ ]]; then
+        base_version_for_lookup="${BASH_REMATCH[1]}"
+    fi
+
+    local staging_tags=$(get_staging_tags_for_version "$base_version_for_lookup")
+    log_info "   - Staging tags exist: $([ -n "$staging_tags" ] && echo "YES ($(echo "$staging_tags" | wc -l) tags)" || echo "NO")"
+    log_empty ""
+
+    if [ "$check_only" = true ]; then
+        log_info "Which impact do you want to check?"
+    else
+        log_info "Which synchronization do you want to perform?"
+    fi
+
+    log_info "1) FROM production $version → newer staging versions"
+    log_info "2) FROM staging $version hotfix → newer staging versions"
+    log_empty ""
+
+    if confirm_action "Perform $([ "$check_only" = true ] && echo "impact check" || echo "synchronization") for PRODUCTION context?"; then
+        # Source the production sync script
+        source "$LIB_DIR/git-trident-staging-sync-from-production.sh"
+
+        # Validate production context if chosen
+        if validate_production_tag_not_deprecated "$version"; then
+            echo "production"
+        else
+            echo "unknown"
+        fi
+    else
+        # Validate staging context if chosen
+        if validate_staging_tag_not_deprecated "$base_version_for_lookup"; then
+            echo "staging"
+        else
+            echo "unknown"
+        fi
+    fi
+}
+
+# =============================================================================
+# SYNC DISPATCHER WITH PLATFORM CLASSIFICATION
+# =============================================================================
+
+run_sync_from_production() {
+    local version="$1"
+    local check_only="$2"
+
+    log_info "📦 Synchronizing FROM PRODUCTION: $version"
+    log_info "=========================================="
+
+    # Source the production sync script
+    source "$LIB_DIR/git-trident-staging-sync-from-production.sh"
+
+    if [ "$check_only" = true ]; then
+        check_staging_releases_need_rebase "$version"
+    else
+        if ! rebase_staging_releases "$version"; then
+            log_error "❌ Production synchronization failed or had conflicts"
+            log_empty ""
+            log_info "💡 If conflicts occurred:"
+            log_info "   1. Resolve any remaining conflicts manually"
+            log_info "   2. Run the same command again to continue"
+            log_info "   3. Or run 'git trident verify-sync' to check status"
+            return 1
+        fi
+    fi
+}
+
+run_sync_from_staging() {
+    local version="$1"
+    local check_only="$2"
+
+    log_info "🔧 Synchronizing FROM STAGING: $version"
+    log_info "=========================================="
+
+    # Source the staging sync script
+    source "$LIB_DIR/git-trident-staging-sync-from-staging.sh"
+
+    if [ "$check_only" = true ]; then
+        detect_staging_hotfix_impact "$version"
+    else
+        if ! propagate_staging_hotfix "$version"; then
+            log_error "❌ Staging synchronization failed or had conflicts"
+            log_empty ""
+            log_info "💡 If conflicts occurred:"
+            log_info "   1. Resolve any remaining conflicts manually"
+            log_info "   2. Run the same command again to continue"
+            log_info "   3. Or run 'git trident verify-sync' to check status"
+            return 1
+        fi
+    fi
+}
+
+# =============================================================================
+# VERSION VALIDATION WITH PLATFORM SUPPORT
+# =============================================================================
+
+validate_sync_version() {
+    local version="$1"
+    
+    log_debug "Validating sync version: $version"
+    
+    # Basic format validation based on current mode
+    local suffix="$(get_rc_suffix)"
+    if is_platform_specific_mode; then
+        # Platform-specific mode: must have platform prefix
+        if [[ ! "$version" =~ ^([a-zA-Z0-9_-]+)-([0-9]+)\.([0-9]+)\.([0-9]+)(${suffix}[0-9]+)?$ ]]; then
+            log_error "Invalid platform-specific version format: $version"
+            log_info "In platform-specific mode, use: platform-MAJOR.MINOR.PATCH[${suffix}XX]"
+            log_info "Example: android-1.2.3 or ios-2.0.1${suffix}01"
+            log_info "Supported platforms: $PLATFORMS"
+            return 1
+        fi
+        
+        local platform="${BASH_REMATCH[1]}"
+        if ! validate_platform "$platform"; then
+            return 1
+        fi
+    else
+        # Legacy mode: simple version format
+        if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(${suffix}[0-9]+)?$ ]]; then
+            log_error "Invalid legacy version format: $version"
+            log_info "In legacy mode, use: MAJOR.MINOR.PATCH[${suffix}XX]"
+            log_info "Example: 1.2.3 or 2.0.1${suffix}01"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# =============================================================================
+# PLATFORM PROPAGATION ANALYSIS
+# =============================================================================
+
+analyze_platform_propagation() {
+    local source_version="$1"
+    local context="$2"
+
+    if ! is_platform_specific_mode; then
+        log_debug "Not in platform-specific mode, skipping propagation analysis"
+        return 0
+    fi
+
+    local platform=$(extract_platform_from_version "$source_version")
+    if [ -z "$platform" ]; then
+        log_warn "Could not extract platform from version: $source_version"
+        return 1
+    fi
+
+    local platform_type=$(get_platform_type_from_version "$source_version")
+
+    case "$platform_type" in
+        "common")
+            log_info "📋 Platform classification: $platform (COMMON)"
+            log_info "   → Propagates to: $INDEPENDENT_PLATFORMS"
+
+            # Show which independent platforms will receive changes
+            local dependent_platforms=$(get_dependent_platforms_for_source "$source_version")
+            if [ -n "$dependent_platforms" ]; then
+                log_info "   → Dependent platforms: $dependent_platforms"
+
+                # Check if any independent platforms exist
+                for dep_platform in $dependent_platforms; do
+                    local platform_tags=$(get_all_staging_tags "$dep_platform")
+                    if [ -z "$platform_tags" ]; then
+                        log_info "   → Note: No staging tags found for $dep_platform"
+                    else
+                        local latest_tag=$(echo "$platform_tags" | tail -1)
+                        log_info "   → Latest $dep_platform tag: $(echo "$latest_tag" | sed "s|^${STAGING_TAG_PREFIX}||")"
+                    fi
+                done
+            fi
+            ;;
+
+        "independent")
+            log_info "📋 Platform classification: $platform (INDEPENDENT)"
+            log_info "   → Propagates to: $platform only"
+
+            # Check for newer versions of same platform
+            local platform_tags=$(get_all_staging_tags "$platform")
+            if [ -n "$platform_tags" ]; then
+                local source_base=$(extract_base_version "$source_version")
+                local newer_count=0
+                for tag in $platform_tags; do
+                    local tag_version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
+                    local tag_base=$(extract_base_version "$tag_version")
+                    if is_version_greater "$tag_base" "$source_base"; then
+                        newer_count=$((newer_count + 1))
+                    fi
+                done
+                log_info "   → Newer versions of $platform: $newer_count"
+            fi
+            ;;
+
+        "legacy")
+            log_info "📋 Platform classification: Single-environment mode"
+            ;;
+
+        *)
+            log_warn "Unknown platform type for: $platform"
+            return 1
+            ;;
+    esac
+
+    log_empty ""
+    return 0
+}
+
+# =============================================================================
+# MAIN SYNC LOGIC WITH PLATFORM PROPAGATION RULES
+# =============================================================================
+
+staging_sync_tags() {
+    local version="$1"
+    local check_only="${2:-false}"
+
+    if [ "$check_only" = true ]; then
+        log_info "🔍 Checking sync impact for version: $version"
+    else
+        log_info "🔄 Synchronizing staging tags for version: $version"
+    fi
+    log_info "=========================================="
+
+    # Validate version format and platform compatibility
+    if ! validate_sync_version "$version"; then
+        return 1
+    fi
+
+    # Analyze platform propagation rules
+    if is_platform_specific_mode; then
+        # We don't know context yet, but we can analyze the source version
+        analyze_platform_propagation "$version" "source"
+    fi
+
+    # Detect context
+    local context
+    context=$(detect_sync_context "$version")
+
+    # Handle ambiguous cases
+    if [ "$context" = "unknown" ]; then
+        context=$(handle_ambiguous_version "$version" "$check_only")
+    fi
+
+    local sync_success=true
+
+    # Show final platform classification with context
+    if is_platform_specific_mode; then
+        local platform=$(extract_platform_from_version "$version")
+        if [ -n "$platform" ]; then
+            local platform_type=$(get_platform_type_from_version "$version")
+            log_info "📋 Final classification: $platform ($platform_type) → $context"
+            log_empty ""
+        fi
+    fi
+
+    case "$context" in
+        "production")
+            if [ "$check_only" = true ]; then
+                log_info "📦 Checking PRODUCTION impact: $version"
+                log_info "   Action: Check which staging versions need production changes"
+            else
+                log_info "📦 Detected PRODUCTION version: $version"
+                log_info "   Action: Sync production changes to newer staging versions"
+            fi
+            log_empty ""
+            
+            if ! run_sync_from_production "$version" "$check_only"; then
+                sync_success=false
+            fi
+            ;;
+            
+        "staging")
+            if [ "$check_only" = true ]; then
+                log_info "🔧 Checking STAGING impact: $version"
+                log_info "   Action: Check which newer versions need hotfix"
+            else
+                log_info "🔧 Detected STAGING version: $version"
+                log_info "   Action: Sync staging hotfix to newer staging versions"
+            fi
+            log_empty ""
+            
+            if ! run_sync_from_staging "$version" "$check_only"; then
+                sync_success=false
+            fi
+            ;;
+            
+        *)
+            log_error "Cannot determine context for version: $version"
+            log_empty ""
+
+            # Show debug info
+            show_context_debug_info "$version"
+            log_empty ""
+
+            log_info "Production versions (with prefix):"
+            show_available_tags "production"
+            log_empty ""
+
+            log_info "Staging base versions (without prefix):"
+            git tag -l "${STAGING_TAG_PREFIX}*" | sed "s|^${STAGING_TAG_PREFIX}||" | sed "s|$(get_rc_suffix)[0-9]*$||" | sort -V | uniq
+
+            # Also show exact matches
+            log_empty ""
+            log_info "Looking for exact matches:"
+            local production_tag="${PRODUCTION_TAG_PREFIX}${version}"
+            log_info "  Production tag: $production_tag (exists: $(is_valid_tag "$production_tag" && echo "YES" || echo "NO"))"
+
+            # For staging lookup, strip RC suffix if present
+            local base_version_for_lookup="$version"
+            local suffix="$(get_rc_suffix)"
+            if [[ "$version" =~ ^(.+)${suffix}[0-9]+$ ]]; then
+                base_version_for_lookup="${BASH_REMATCH[1]}"
+            fi
+
+            local staging_pattern="${STAGING_TAG_PREFIX}${base_version_for_lookup}$(get_rc_suffix)*"
+            local staging_matches=$(git tag -l "$staging_pattern")
+            log_info "  Staging pattern: $staging_pattern (matches: $(echo "$staging_matches" | wc -l))"
+            if [ -n "$staging_matches" ]; then
+                log_info "  Matching staging tags:"
+                echo "$staging_matches" | while read tag; do
+                    log_info "    - $tag"
+                done
+            fi
+
+            return 1
+            ;;
+    esac
+
+    # Final status report
+    log_empty ""
+    if [ "$check_only" = true ]; then
+        if [ "$sync_success" = true ]; then
+            log_info "✅ Sync check completed successfully"
+        else
+            log_warn "⚠️  Sync check completed with warnings"
+        fi
+    else
+        if [ "$sync_success" = true ]; then
+            log_info "🎉 Synchronization completed successfully!"
+        else
+            log_error "❌ Synchronization completed with errors or conflicts"
+            log_info "   Please resolve any issues and run the command again if needed"
+        fi
+
+        # Always verify sync status after operations
+        log_empty ""
+        log_info "🔍 Verifying final synchronization status..."
+        if command -v "$SCRIPT_DIR/git-trident-verify-sync" >/dev/null 2>&1; then
+            "$SCRIPT_DIR/git-trident-verify-sync" --brief
+        fi
+    fi
+
+    return "$([ "$sync_success" = true ] && echo 0 || echo 1)"
+}
+
+# =============================================================================
+# ARGUMENT PARSING
+# =============================================================================
+
+parse_arguments() {
+    local version=""
+    local check_only=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            "--dry-run"|"--check-only"|"--detect")
+                check_only=true
+                ;;
+            *)
+                if [[ "$1" =~ ^- ]]; then
+                    log_error "Unknown option: $1"
+                    log_info "Use 'git trident staging sync-tags --help' for usage information"
+                    exit 1
+                else
+                    if [ -z "$version" ]; then
+                        version="$1"
+                    else
+                        log_error "Too many arguments"
+                        log_info "Usage: git trident staging sync-tags <version>"
+                        exit 1
+                    fi
+                fi
+                ;;
+        esac
+        shift
+    done
+
+    if [ -z "$version" ]; then
+        log_error "Version is required"
+        log_info "Usage: git trident staging sync-tags <version>"
+        exit 1
+    fi
+
+    echo "$version $check_only"
+}
+
+# =============================================================================
+# MAIN FUNCTION WITH ERROR HANDLING
+# =============================================================================
+
+main() {
+    # Parse arguments
+    local args_result
+    args_result=$(parse_arguments "$@")
+
+    # Use array approach to parse results
+    IFS=' ' read -r version check_only <<< "$args_result"
+
+    # Run pre-operation checks
+    if ! pre_operation_checks "staging-sync-tags"; then
+        exit 1
+    fi
+
+    # Execute the synchronization
+    if ! staging_sync_tags "$version" "$check_only"; then
+        log_error "Staging synchronization failed"
+        exit 1
+    fi
+}
+
+# Handle script termination
+handle_exit() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        log_error "Script terminated with errors"
+    fi
+    exit $exit_code
+}
+
+# Set up exit handler
+trap handle_exit EXIT INT TERM
+
+main "$@"

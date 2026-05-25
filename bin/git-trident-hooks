@@ -1,0 +1,516 @@
+#!/bin/bash
+# Git Trident Hooks - Hook Management CLI
+# Manage Git Trident Tools hooks installation and configuration
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# =============================================================================
+# DYNAMIC PATH DISCOVERY
+# =============================================================================
+
+# Try to discover the installation directory
+discover_install_dir() {
+    # 1. Check if we're running from development directory
+    if [[ -f "$SCRIPT_DIR/../lib/git-trident-common.sh" ]]; then
+        echo "$(cd "$SCRIPT_DIR/.." && pwd)"
+        return 0
+    fi
+
+    # 2. Check if we're in a symlinked installation
+    if [[ -L "$SCRIPT_DIR/git-trident-hooks" ]] || [[ -L "$0" ]]; then
+        local link_target=$(readlink -f "$SCRIPT_DIR/git-trident-hooks" 2>/dev/null || readlink -f "$0" 2>/dev/null)
+        if [[ -n "$link_target" ]]; then
+            local possible_dir=$(dirname "$(dirname "$link_target")")
+            if [[ -f "$possible_dir/lib/git-trident-common.sh" ]]; then
+                echo "$possible_dir"
+                return 0
+            fi
+        fi
+    fi
+
+    # 3. Check common installation locations
+    local common_locations=(
+        "$HOME/.git-trident"
+        "/usr/local/share/git-trident"
+        "/opt/git-trident"
+    )
+
+    for location in "${common_locations[@]}"; do
+        if [[ -f "$location/lib/git-trident-common.sh" ]]; then
+            echo "$location"
+            return 0
+        fi
+    done
+
+    # 4. Last resort: check PATH for git-trident command
+    local tools_path=$(command -v git-trident 2>/dev/null)
+    if [[ -n "$tools_path" ]]; then
+        local possible_dir=$(dirname "$(dirname "$tools_path")")
+        if [[ -f "$possible_dir/lib/git-trident-common.sh" ]]; then
+            echo "$possible_dir"
+            return 0
+        fi
+    fi
+
+    # Could not find installation
+    return 1
+}
+
+# Discover and set paths
+INSTALL_DIR=$(discover_install_dir 2>/dev/null || echo "")
+HOOKS_DIR="$INSTALL_DIR/hooks"
+
+# =============================================================================
+# LOAD UTILITIES
+# =============================================================================
+
+# Load common utilities (for logging, config, etc.)
+export SUPPRESS_CONFIG_ERRORS=true
+if [[ -n "$INSTALL_DIR" ]] && [[ -f "$INSTALL_DIR/lib/git-trident-common.sh" ]]; then
+    source "$INSTALL_DIR/lib/git-trident-common.sh" --no-init
+    log_debug "Loaded from installation: $INSTALL_DIR"
+else
+    # Try to load from development location
+    if [[ -f "$SCRIPT_DIR/../lib/git-trident-common.sh" ]]; then
+        source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
+        INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+        HOOKS_DIR="$INSTALL_DIR/hooks"
+        log_debug "Loaded from development: $INSTALL_DIR"
+    else
+        # Minimal fallback with error
+        echo "❌ Git Trident Tools not found." >&2
+        echo "   Please install git-trident or run from installation directory." >&2
+        exit 1
+    fi
+fi
+
+# Load hook utilities for shared functions
+if [[ -f "$INSTALL_DIR/lib/git-trident-hooks.sh" ]]; then
+    source "$INSTALL_DIR/lib/git-trident-hooks.sh"
+else
+    log_warn "Hook utilities not found, using basic mode"
+fi
+
+# =============================================================================
+# HOOK MANAGEMENT FUNCTIONS
+# =============================================================================
+
+# Get hooks directory path
+get_hooks_dir() {
+    if [[ -d "$HOOKS_DIR" ]]; then
+        echo "$HOOKS_DIR"
+    else
+        log_error "Hooks directory not found: $HOOKS_DIR"
+        log_info "Expected hooks in: $INSTALL_DIR/hooks/"
+        log_info "Please reinstall git-trident"
+        exit 1
+    fi
+}
+
+# Check if hooks are installed globally (core.hooksPath points to our hooks)
+are_hooks_installed_globally() {
+    local current_hooks_path=$(git config --global core.hooksPath 2>/dev/null || echo "")
+    local hooks_dir=$(get_hooks_dir)
+
+    if [[ "$current_hooks_path" == "$hooks_dir" ]]; then
+        return 0  # Installed globally
+    else
+        return 1  # Not installed globally
+    fi
+}
+
+# Check if hooks are installed locally (core.hooksPath in repo config)
+are_hooks_installed_locally() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        return 1  # Not a git repo
+    fi
+
+    local current_hooks_path=$(git config core.hooksPath 2>/dev/null || echo "")
+    local hooks_dir=$(get_hooks_dir)
+
+    if [[ "$current_hooks_path" == "$hooks_dir" ]]; then
+        return 0  # Installed locally
+    else
+        return 1  # Not installed locally
+    fi
+}
+
+# Install hooks globally (set global core.hooksPath)
+install_global() {
+    local hooks_dir=$(get_hooks_dir)
+
+    log_step "Installing Git Trident Tools hooks globally..."
+
+    # Set global hooks path
+    if git config --global core.hooksPath "$hooks_dir"; then
+        log_info "✓ Global hooks path set to: $hooks_dir"
+        log_empty ""
+        log_info "🌍 All git repositories will now use Git Trident Tools hooks."
+        log_empty ""
+        log_info "Note: Hooks are DISABLED by default."
+        log_info "To enable hooks for a project, set HOOKS_ENABLED=true in:"
+        log_info "  - Project config: ./git-trident-config"
+        log_info "  - Or global config: $HOME/.git-trident-config"
+        return 0
+    else
+        log_error "Failed to set global hooks path"
+        return 1
+    fi
+}
+
+# Uninstall hooks globally (remove global core.hooksPath)
+uninstall_global() {
+    log_step "Uninstalling Git Trident Tools hooks globally..."
+
+    # Check if installed
+    if ! are_hooks_installed_globally; then
+        log_info "✓ Hooks were not installed globally"
+        return 0
+    fi
+
+    # Remove global hooks path
+    if git config --global --unset core.hooksPath; then
+        log_info "✓ Global hooks path removed"
+        log_empty ""
+        log_info "Git will now use default .git/hooks/ directory."
+        log_info "Existing project hooks (if any) will still work."
+        return 0
+    else
+        log_error "Failed to remove global hooks path"
+        return 1
+    fi
+}
+
+# Install hooks locally for current repository
+install_local() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        log_error "Not in a git repository"
+        log_info "Run this command from inside a git repository"
+        return 1
+    fi
+
+    local hooks_dir=$(get_hooks_dir)
+
+    log_step "Installing Git Trident Tools hooks for current repository..."
+
+    # Check if already installed
+    if are_hooks_installed_locally; then
+        log_info "✓ Hooks already installed for this repository"
+        return 0
+    fi
+
+    # Set local hooks path (repository-specific)
+    if git config core.hooksPath "$hooks_dir"; then
+        log_info "✓ Repository hooks path set to: $hooks_dir"
+        log_empty ""
+        log_info "📁 This repository will now use Git Trident Tools hooks."
+        log_empty ""
+        log_info "Note: Hooks are DISABLED by default."
+        log_info "To enable hooks, set HOOKS_ENABLED=true in:"
+        log_info "  - Project config: ./git-trident-config"
+        log_info "  - Or create one: cp $HOME/.git-trident-config ./git-trident-config"
+        return 0
+    else
+        log_error "Failed to set repository hooks path"
+        return 1
+    fi
+}
+
+# Uninstall hooks from current repository
+uninstall_local() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        log_error "Not in a git repository"
+        return 1
+    fi
+
+    log_step "Uninstalling Git Trident Tools hooks from current repository..."
+
+    # Check if installed
+    if ! are_hooks_installed_locally; then
+        log_info "✓ Hooks were not installed for this repository"
+        return 0
+    fi
+
+    # Remove local hooks path
+    if git config --unset core.hooksPath; then
+        log_info "✓ Repository hooks path removed"
+        log_empty ""
+        log_info "This repository will now use default .git/hooks/ directory."
+        return 0
+    else
+        log_error "Failed to remove repository hooks path"
+        return 1
+    fi
+}
+
+# Enable hooks in configuration (set HOOKS_ENABLED=true)
+enable_hooks() {
+    local config_target="${1:-auto}"
+    local config_file=""
+
+    case "$config_target" in
+        "global")
+            config_file="$HOME/.git-trident-config"
+            log_step "Enabling hooks in global configuration..."
+            ;;
+        "project"|"local")
+            config_file="./git-trident-config"
+            log_step "Enabling hooks in project configuration..."
+            ;;
+        "auto"|*)
+            # Auto-detect: prefer project config if exists, else global
+            if [[ -f "./git-trident-config" ]]; then
+                config_file="./git-trident-config"
+                log_step "Enabling hooks in project configuration..."
+            elif [[ -f "$HOME/.git-trident-config" ]]; then
+                config_file="$HOME/.git-trident-config"
+                log_step "Enabling hooks in global configuration..."
+            else
+                log_error "No configuration file found"
+                log_info "Create a configuration file first:"
+                log_info "  cp $HOME/.git-trident-config ./git-trident-config  # Project"
+                log_info "  # or edit: $HOME/.git-trident-config                  # Global"
+                return 1
+            fi
+            ;;
+    esac
+
+    if [[ ! -f "$config_file" ]]; then
+        log_error "Configuration file not found: $config_file"
+        return 1
+    fi
+
+    # Update HOOKS_ENABLED in config file
+    if grep -q "HOOKS_ENABLED=" "$config_file"; then
+        # Update existing setting
+        sed -i.bak 's/^HOOKS_ENABLED=.*/HOOKS_ENABLED=true/' "$config_file"
+        rm -f "$config_file.bak" 2>/dev/null
+        log_info "✓ Updated HOOKS_ENABLED=true in: $config_file"
+    else
+        # Add setting to GIT HOOKS CONFIGURATION section
+        if grep -q "# =============================================================================
+# GIT HOOKS CONFIGURATION" "$config_file"; then
+            # Insert after hooks section header
+            sed -i.bak '/# GIT HOOKS CONFIGURATION/a\
+HOOKS_ENABLED=true' "$config_file"
+        else
+            # Add hooks section
+            echo "" >> "$config_file"
+            echo "# =============================================================================" >> "$config_file"
+            echo "# GIT HOOKS CONFIGURATION" >> "$config_file"
+            echo "# =============================================================================" >> "$config_file"
+            echo "" >> "$config_file"
+            echo "# Enable/disable hooks (true/false)" >> "$config_file"
+            echo "HOOKS_ENABLED=true" >> "$config_file"
+        fi
+        rm -f "$config_file.bak" 2>/dev/null
+        log_info "✓ Added HOOKS_ENABLED=true to: $config_file"
+    fi
+
+    log_empty ""
+    log_info "Hooks are now ENABLED in: $(basename "$config_file")"
+    log_info "The next git operation will validate using Git Trident Tools rules."
+    return 0
+}
+
+# Disable hooks in configuration (set HOOKS_ENABLED=false)
+disable_hooks() {
+    local config_target="${1:-auto}"
+    local config_file=""
+
+    case "$config_target" in
+        "global")
+            config_file="$HOME/.git-trident-config"
+            log_step "Disabling hooks in global configuration..."
+            ;;
+        "project"|"local")
+            config_file="./git-trident-config"
+            log_step "Disabling hooks in project configuration..."
+            ;;
+        "auto"|*)
+            # Auto-detect
+            if [[ -f "./git-trident-config" ]]; then
+                config_file="./git-trident-config"
+                log_step "Disabling hooks in project configuration..."
+            elif [[ -f "$HOME/.git-trident-config" ]]; then
+                config_file="$HOME/.git-trident-config"
+                log_step "Disabling hooks in global configuration..."
+            else
+                log_error "No configuration file found"
+                return 1
+            fi
+            ;;
+    esac
+
+    if [[ ! -f "$config_file" ]]; then
+        log_error "Configuration file not found: $config_file"
+        return 1
+    fi
+
+    # Update HOOKS_ENABLED in config file
+    if grep -q "HOOKS_ENABLED=" "$config_file"; then
+        sed -i.bak 's/^HOOKS_ENABLED=.*/HOOKS_ENABLED=false/' "$config_file"
+        rm -f "$config_file.bak" 2>/dev/null
+        log_info "✓ Updated HOOKS_ENABLED=false in: $config_file"
+    else
+        log_info "✓ Hooks already disabled (HOOKS_ENABLED not set)"
+    fi
+
+    log_empty ""
+    log_info "Hooks are now DISABLED in: $(basename "$config_file")"
+    log_info "Git operations will skip Git Trident Tools validation."
+    return 0
+}
+
+# Show hook status
+status() {
+    local hooks_dir=$(get_hooks_dir 2>/dev/null || echo "")
+
+    log_step "Git Trident Tools Hooks Status"
+    log_info "=========================================="
+
+    # Installation directory check
+    if [[ -d "$hooks_dir" ]]; then
+        log_info "📦 Installation: ✓ Git Trident Tools installed"
+        log_info "   Installation: $INSTALL_DIR"
+        log_info "   Hooks path: $hooks_dir"
+    else
+        log_error "📦 Installation: ✗ Git Trident Tools not installed"
+        log_info "   Run: ./install.sh to install"
+        log_info "=========================================="
+        return 1
+    fi
+
+    log_empty ""
+
+    # Global hooks status
+    if are_hooks_installed_globally; then
+        local hooks_path=$(git config --global core.hooksPath)
+        log_info "🌍 Global Hooks: ✓ ENABLED (all repositories)"
+        log_info "   Config: git config --global core.hooksPath"
+        log_info "   Value: $hooks_path"
+    else
+        log_info "🌍 Global Hooks: ✗ DISABLED"
+        log_info "   Run: git trident hooks install-global"
+    fi
+
+    log_empty ""
+
+    # Local hooks status (if in git repo)
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        local repo_name=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo "current-repo")")
+
+        if are_hooks_installed_locally; then
+            local hooks_path=$(git config core.hooksPath)
+            log_info "📁 Repository Hooks ($repo_name): ✓ ENABLED"
+            log_info "   Config: git config core.hooksPath"
+            log_info "   Value: $hooks_path"
+        else
+            log_info "📁 Repository Hooks ($repo_name): ✗ DISABLED"
+            log_info "   Run: git trident hooks install-local"
+        fi
+    else
+        log_info "📁 Repository Hooks: Not in a git repository"
+    fi
+
+    log_empty ""
+
+    # Configuration status
+    log_info "⚙️  Configuration Status:"
+
+    # Check global config
+    local global_config="$HOME/.git-trident-config"
+    if [[ -f "$global_config" ]]; then
+        local global_enabled=$(grep "^HOOKS_ENABLED=" "$global_config" 2>/dev/null | tail -1 | cut -d= -f2 || echo "false")
+        log_info "   Global config: $global_config"
+        log_info "   HOOKS_ENABLED: $global_enabled"
+    else
+        log_info "   Global config: Not found (using defaults)"
+    fi
+
+    # Check project config
+    local project_config="./git-trident-config"
+    if [[ -f "$project_config" ]]; then
+        local project_enabled=$(grep "^HOOKS_ENABLED=" "$project_config" 2>/dev/null | tail -1 | cut -d= -f2 || echo "false")
+        log_info "   Project config: $project_config"
+        log_info "   HOOKS_ENABLED: $project_enabled"
+    else
+        log_info "   Project config: Not found (using global)"
+    fi
+
+    log_empty ""
+
+    # Effective status
+    log_info "🎯 Effective Status:"
+
+    # Check if hooks would actually run
+    local effective_enabled="false"
+
+    # Priority: project config > global config > default (false)
+    if [[ -f "$project_config" ]] && grep -q "^HOOKS_ENABLED=true" "$project_config" 2>/dev/null; then
+        effective_enabled="true"
+        log_info "   Hooks: ✓ ENABLED (by project config)"
+    elif [[ -f "$global_config" ]] && grep -q "^HOOKS_ENABLED=true" "$global_config" 2>/dev/null; then
+        effective_enabled="true"
+        log_info "   Hooks: ✓ ENABLED (by global config)"
+    else
+        log_info "   Hooks: ✗ DISABLED (default)"
+    fi
+
+    # Check if hooks are configured to run
+    if [[ "$effective_enabled" == "true" ]]; then
+        if are_hooks_installed_globally || { git rev-parse --git-dir > /dev/null 2>&1 && are_hooks_installed_locally; }; then
+            log_info "   Configuration: ✓ READY (hooks will run)"
+        else
+            log_warn "   Configuration: ⚠️  HOOKS NOT INSTALLED"
+            log_info "     Hooks are enabled but not installed for this context"
+            log_info "     Run: git trident hooks install-global (or install-local)"
+        fi
+    fi
+
+    log_info "=========================================="
+}
+
+# =============================================================================
+# MAIN DISPATCHER
+# =============================================================================
+
+main() {
+    local command="${1:-status}"
+    local target="${2:-}"
+
+    case "$command" in
+        "install-global"|"global")
+            install_global
+            ;;
+        "uninstall-global"|"global-remove")
+            uninstall_global
+            ;;
+        "install-local"|"local")
+            install_local
+            ;;
+        "uninstall-local"|"local-remove")
+            uninstall_local
+            ;;
+        "enable"|"on")
+            enable_hooks "$target"
+            ;;
+        "disable"|"off")
+            disable_hooks "$target"
+            ;;
+        "status"|"info")
+            status
+            ;;
+        "help"|"--help"|"-h")
+            show_hooks_help
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            show_hooks_help
+            exit 1
+            ;;
+    esac
+}
+
+# Run main function
+main "$@"
