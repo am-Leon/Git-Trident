@@ -24,17 +24,13 @@ set -u
 # =============================================================================
 
 PROJECT_FOLDER=".git-trident"
-ACTION="install"
 CUSTOM_PATH=""
 
 # Improved Argument Parsing
 if [[ $# -gt 0 ]]; then
     case "$1" in
-        --uninstall)
-            ACTION="uninstall"
-            ;;
         --help|-h)
-            echo "Usage: ./install.sh [CUSTOM_PATH] | --uninstall"
+            echo "Usage: ./install.sh [CUSTOM_PATH]"
             exit 0
             ;;
         -*)
@@ -72,6 +68,20 @@ log_step()  { echo -e "${UI[BLUE]}[STEP]${UI[NC]} $1"; }
 log_warn()  { echo -e "${UI[YELLOW]}[WARN]${UI[NC]} $1"; }
 log_error() { echo -e "${UI[RED]}[ERROR]${UI[NC]} $1"; }
 log_empty() { echo -e ""; }
+
+# Cross-platform sed in-place editing helper for installation
+_sed_in_place() {
+    local file="$1"
+    local script="$2"
+    local os
+    os=$(uname -s)
+
+    if [[ "$os" == "Darwin" ]]; then
+        sed -i '' "$script" "$file"
+    else
+        sed -i "$script" "$file"
+    fi
+}
 
 # =============================================================================
 # DEPENDENCY CHECKS
@@ -158,24 +168,45 @@ detect_active_profile() {
     local shell_name
     shell_name=$(basename "$SHELL")
     local candidates=()
+    local os
+    os=$(uname -s)
 
-    if [[ "$shell_name" == "zsh" ]]; then
+    if [[ -n "${MSYSTEM:-}" ]] || [[ "$os" == *"MINGW"* ]] || [[ "$os" == *"MSYS"* ]]; then
+        candidates=("$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile")
+    elif [[ "$shell_name" == "zsh" ]]; then
         candidates=("$HOME/.zprofile" "$HOME/.zshrc")
     else
         candidates=("$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile")
     fi
 
+    local profile_path=""
     for file in "${candidates[@]}"; do
         if [[ -f "$file" ]]; then
-            echo "$file"
-            return 0
+            profile_path="$file"
+            break
         fi
     done
 
-    local fallback="$HOME/.profile"
-    [[ "$shell_name" == "zsh" ]] && fallback="$HOME/.zshrc"
-    [[ "$shell_name" == "bash" ]] && fallback="$HOME/.bash_profile"
-    touch "$fallback" && echo "$fallback"
+    if [[ -z "$profile_path" ]]; then
+        local fallback="$HOME/.profile"
+        if [[ -n "${MSYSTEM:-}" ]] || [[ "$os" == *"MINGW"* ]] || [[ "$os" == *"MSYS"* ]]; then
+            fallback="$HOME/.bash_profile"
+        elif [[ "$shell_name" == "zsh" ]]; then
+            fallback="$HOME/.zshrc"
+        elif [[ "$shell_name" == "bash" ]]; then
+            fallback="$HOME/.bash_profile"
+        fi
+        touch "$fallback"
+        profile_path="$fallback"
+    fi
+
+    # Ensure profile path uses POSIX format if on MINGW/MSYS and cygpath is available
+    if command -v cygpath >/dev/null 2>&1; then
+        profile_path=$(cygpath -u "$profile_path")
+    fi
+
+    echo "$profile_path"
+    return 0
 }
 
 # =============================================================================
@@ -197,18 +228,9 @@ show_post_install_instructions() {
     log_empty
     log_info "🔧 NEXT STEPS"
     log_info "=========================================="
-    log_info "1. Restart your terminal or run:"
-    log_info "     source $profile"
-
-    log_empty
-    log_info "2. Inside any Git project, initialize Git Trident:"
+    log_info "• Inside any Git project, initialize Git Trident:"
     log_info "     git trident config init"
     log_info "   This creates the project config and sets up hooks."
-
-    log_empty
-    log_info "3. Verify the installation:"
-    log_info "     git trident -h"
-    log_info "     git trident version"
 
     log_empty
     log_info "💡 CONFIGURATION NOTES"
@@ -234,45 +256,6 @@ exit_handler() {
     fi
 }
 trap exit_handler EXIT INT TERM
-
-uninstall() {
-    log_warn "Starting uninstallation from: $INSTALL_DIR"
-    local profile
-    profile=$(detect_active_profile)
-
-    # 1. Remove Installation Directory
-    if [[ -d "$INSTALL_DIR" ]]; then
-        rm -rf -- "$INSTALL_DIR"
-        log_info "✓ Removed directory: $INSTALL_DIR"
-    fi
-
-    # 2. Clean Shell Profile
-    sed -i.bak '/# Git Trident/d' "$profile" 2>/dev/null || true
-    sed -i.bak '/\.git-trident\/bin/d' "$profile" 2>/dev/null || true
-    log_info "✓ Profile cleaned: $profile"
-
-    # 3. Handle Global Config (with confirmation, safe for pipes)
-    local global_config="$HOME/.git-trident-config"
-    if [[ -f "$global_config" ]]; then
-        local remove_config="n"
-        if [ -t 0 ]; then
-            echo -e -n "${UI[YELLOW]}[PROMPT]${UI[NC]} Remove global configuration file? (~/.git-trident-config) [y/N]: "
-            read -r response
-            remove_config="$response"
-        fi
-
-        if [[ "$remove_config" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            rm -f "$global_config"
-            log_info "✓ Global configuration removed."
-        else
-            log_info "✓ Global configuration preserved."
-        fi
-    fi
-
-    SUCCESS_FLAG=true
-    log_info "Uninstallation complete. Please restart your terminal."
-    exit 0
-}
 
 run_install() {
     log_step "Starting Deployment..."
@@ -305,9 +288,8 @@ run_install() {
     fi
 
     # 4. Path Update
-    sed -i.bak '/# Git Trident/d' "$profile" 2>/dev/null || true
-    sed -i.bak '/\.git-trident\/bin/d' "$profile" 2>/dev/null || true
-    rm -f "${profile}.bak" 2>/dev/null || true
+    _sed_in_place "$profile" '/# Git Trident/d' 2>/dev/null || true
+    _sed_in_place "$profile" '/\.git-trident\/bin/d' 2>/dev/null || true
     echo -e "\n# Git Trident - Added $(date +%Y-%m-%d)\nexport PATH=\"$INSTALL_DIR/bin:\$PATH\"" >> "$profile"
 
     # 5. Verification
@@ -317,6 +299,22 @@ run_install() {
     if command -v git-trident >/dev/null 2>&1; then
         SUCCESS_FLAG=true
         show_post_install_instructions "$profile"
+
+        # Clean up temp folder before executing shell
+        if [[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]]; then
+            rm -rf "$TEMP_DIR"
+        fi
+
+        if [ -t 0 ] && [ -t 1 ]; then
+            # Interactive terminal — we can restart the shell to load the new PATH
+            log_empty
+            log_info "♻️  Restarting your shell to apply PATH changes..."
+            exec "$SHELL" -l
+        else
+            # Piped execution (curl | bash) — cannot restart
+            log_empty
+            log_info "💡 If you face 'command not found', run: ${UI[GREEN]}source $profile${UI[NC]}"
+        fi
     else
         log_error "Installation verification failed."
         exit 1
@@ -327,9 +325,5 @@ run_install() {
 # EXECUTION
 # =============================================================================
 
-if [[ "$ACTION" == "uninstall" ]]; then
-    uninstall
-else
-    check_dependencies
-    run_install
-fi
+check_dependencies
+run_install

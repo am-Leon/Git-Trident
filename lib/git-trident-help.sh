@@ -70,6 +70,7 @@ Utility Commands:
   status                         Quick sync status
   tags <env>                     Show available tags for environment
   version [command]              Show version and system info
+  uninstall [--force]            Remove Git Trident from your system
   help                           Show this help message
 
 Examples:

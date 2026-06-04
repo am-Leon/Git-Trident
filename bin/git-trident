@@ -5,7 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source common utilities - skip auto-init for utility commands
-if [[ "$1" =~ ^(help|--help|-h|version|config|hooks)$ ]]; then
+if [[ "$1" =~ ^(help|--help|-h|version|config|hooks|uninstall)$ ]]; then
     source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
 else
     source "$SCRIPT_DIR/../lib/git-trident-common.sh"
@@ -534,6 +534,10 @@ handle_config() {
     execute_script "git-trident-config" "$@"
 }
 
+handle_uninstall() {
+    execute_script "git-trident-uninstall" "$@"
+}
+
 # =============================================================================
 # UTILITY COMMAND DISPATCHER
 # =============================================================================
@@ -639,6 +643,9 @@ main() {
             ;;
         "staging")
             dispatch_staging_command "${remaining_args[@]}"
+            ;;
+        "uninstall")
+            handle_uninstall "${remaining_args[@]}"
             ;;
         "push-all"|"verify-sync"|"status"|"tags"|"version"|"help"|"cleanup"|"hooks"|"config")
             dispatch_utility_command "$namespace" "${remaining_args[@]}"

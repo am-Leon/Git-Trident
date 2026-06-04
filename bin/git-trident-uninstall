@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Git Trident — Uninstaller
+# Usage: git trident uninstall [--force]
+#   or:  ~/.git-trident/bin/git-trident-uninstall [--force]
+# =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Source constants (branding/version)
+if [[ -f "$INSTALL_DIR/lib/git-trident-constants.sh" ]]; then
+    source "$INSTALL_DIR/lib/git-trident-constants.sh"
+else
+    TRIDENT_VERSION="unknown"
+fi
+
+# Source common utilities (skip auto-init)
+if [[ -f "$INSTALL_DIR/lib/git-trident-common.sh" ]]; then
+    source "$INSTALL_DIR/lib/git-trident-common.sh" --no-init
+fi
+
+# Replicate active profile detection
+detect_active_profile() {
+    local shell_name
+    shell_name=$(basename "${SHELL:-bash}")
+    local candidates=()
+
+    if [[ "$shell_name" == "zsh" ]]; then
+        candidates=("$HOME/.zprofile" "$HOME/.zshrc")
+    else
+        candidates=("$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile")
+    fi
+
+    for file in "${candidates[@]}"; do
+        if [[ -f "$file" ]]; then
+            echo "$file"
+            return 0
+        fi
+    done
+
+    local fallback="$HOME/.profile"
+    [[ "$shell_name" == "zsh" ]] && fallback="$HOME/.zshrc"
+    [[ "$shell_name" == "bash" ]] && fallback="$HOME/.bash_profile"
+    echo "$fallback"
+}
+
+# Parse options
+FORCE_UNINSTALL=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)
+            FORCE_UNINSTALL=true
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: git trident uninstall [--force]"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Perform uninstallation
+log_warn "⚠️  Preparing to uninstall Git Trident v$TRIDENT_VERSION from: $INSTALL_DIR"
+
+if [[ "$FORCE_UNINSTALL" != "true" ]]; then
+    if ! confirm_action "Are you sure you want to completely uninstall Git Trident?" "false"; then
+        log_info "Uninstallation cancelled."
+        exit 0
+    fi
+fi
+
+profile=$(detect_active_profile)
+log_step "Uninstalling..."
+
+# 1. Clean profile PATH modification
+if [[ -f "$profile" ]]; then
+    if command -v sed >/dev/null 2>&1; then
+        # Handle Darwin vs GNU sed
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            sed -i '' '/# Git Trident/d' "$profile" 2>/dev/null || true
+            sed -i '' '/\.git-trident\/bin/d' "$profile" 2>/dev/null || true
+        else
+            sed -i '/# Git Trident/d' "$profile" 2>/dev/null || true
+            sed -i '/\.git-trident\/bin/d' "$profile" 2>/dev/null || true
+        fi
+        log_info "✓ Profile cleaned: $profile"
+    else
+        log_warn "Could not clean profile automatically. Please remove PATH entries manually from $profile."
+    fi
+fi
+
+# 2. Handle Global Config File (~/.git-trident-config)
+global_config="$HOME/.git-trident-config"
+if [[ -f "$global_config" ]]; then
+    remove_config=false
+    if [[ "$FORCE_UNINSTALL" == "true" ]]; then
+        remove_config=true
+    else
+        if confirm_action "Remove global configuration file? (~/.git-trident-config)" "false"; then
+            remove_config=true
+        fi
+    fi
+
+    if [[ "$remove_config" == "true" ]]; then
+        rm -f "$global_config"
+        log_info "✓ Removed global configuration file."
+    else
+        log_info "✓ Preserved global configuration file."
+    fi
+fi
+
+# 3. Remove Installation Directory
+cd "$HOME" || exit 1
+if [[ -d "$INSTALL_DIR" ]]; then
+    rm -rf "$INSTALL_DIR"
+    log_info "✓ Removed installation directory: $INSTALL_DIR"
+fi
+
+log_empty
+log_info "🎉 Git Trident uninstalled successfully. Please restart your terminal."
+exit 0
