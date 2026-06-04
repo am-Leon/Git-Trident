@@ -158,7 +158,60 @@ assert_failure "$?" "load_project_config fails when no configs exist"
 assert_equals "$output" "" "Error output was completely suppressed with SUPPRESS_CONFIG_ERRORS"
 
 # =============================================================================
-# Test 5: Cleanup CLI Arguments and Routing
+# Test 5: Error when not inside a Git repository
+# =============================================================================
+start_test_case "config_05_not_in_git_repo"
+setup_sandbox
+
+# Mock git to fail for git-repo check
+git() {
+    if [[ "$1" == "rev-parse" && "$2" == "--git-dir" ]]; then
+        return 1
+    fi
+    command git "$@"
+}
+export -f git
+
+unset CONFIG_LOADED
+unset SUPPRESS_CONFIG_ERRORS
+
+source "$PROJECT_ROOT/lib/git-trident-common.sh" --no-init
+output=$(load_project_config 2>&1)
+
+assert_failure "$?" "load_project_config fails outside a git repository"
+assert_contains "$output" "Not inside a Git repository" "Error message correctly notes not inside a Git repository"
+
+# Clean up mock function
+unset -f git
+
+# =============================================================================
+# Test 6: Error when project config is missing but global exists
+# =============================================================================
+start_test_case "config_06_no_project_config"
+setup_sandbox
+
+export HOME="$SANDBOX_DIR/home"
+# Write mock Global Config
+cat <<EOF > "$HOME/.git-trident-config"
+AUTO_PUSH_ON_FINISH=true
+EOF
+
+# Ensure project config does NOT exist in current directory
+rm -f ./git-trident-config
+rm -f ./.git-trident-config
+
+unset CONFIG_LOADED
+unset SUPPRESS_CONFIG_ERRORS
+
+source "$PROJECT_ROOT/lib/git-trident-common.sh" --no-init
+output=$(load_project_config 2>&1)
+
+assert_failure "$?" "load_project_config fails when project config is missing"
+assert_contains "$output" "No project configuration file found" "Error message correctly notes project config is missing"
+assert_contains "$output" "git trident config init" "Error message recommends running config init"
+
+# =============================================================================
+# Test 7: Cleanup CLI Arguments and Routing
 # =============================================================================
 start_test_case "cleanup_01_subcommand_routing"
 setup_sandbox
@@ -236,7 +289,7 @@ output_prune=$(echo "y" | "$PROJECT_ROOT/bin/git-trident-cleanup" prune 2>&1)
 assert_contains "$output_prune" "Scanning for deprecated staging tags" "cleanup prune is routed"
 
 # =============================================================================
-# Test 6: Dry Run Flag Standardization
+# Test 8: Dry Run Flag Standardization
 # =============================================================================
 start_test_case "cleanup_02_dry_run_flag"
 setup_sandbox

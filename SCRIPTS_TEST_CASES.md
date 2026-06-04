@@ -149,5 +149,7 @@ scripts in the Git Trident project. Every test case listed here must have a corr
 | CONFIG_02_TWO_TIER_LOADING           | Project overrides global config      | `load_project_config`                               | Global defaults with project overlay   | 📝 Implemented |
 | CONFIG_03_GLOBAL_ONLY_KEY_PROTECTION | Protect global-only overrides        | `load_project_config`                               | Rejects global keys in project config  | 📝 Implemented |
 | CONFIG_04_SUPPRESS_ERRORS            | Quiet loading ignores missing config | `load_project_config` with `SUPPRESS_CONFIG_ERRORS` | Fail code but no stdout/stderr output  | 📝 Implemented |
+| CONFIG_05_NOT_IN_GIT_REPO            | Error when not inside a Git repo     | `load_project_config` outside a Git repository      | Fails with clean git-repo error        | 📝 Implemented |
+| CONFIG_06_NO_PROJECT_CONFIG          | Error when project config missing    | `load_project_config` without project config        | Fails with config init recommendation  | 📝 Implemented |
 | CLEANUP_01_SUBCOMMAND_ROUTING        | Validates cleanup target dispatch    | `bin/git-trident-cleanup sync tags/branches`        | Appropriate subcommand function called | 📝 Implemented |
 | CLEANUP_02_DRY_RUN_FLAG              | Validates dry-run execution          | `bin/git-trident-staging-sync-tags --dry-run`       | Pre-operation logs impact without run  | 📝 Implemented |
