@@ -162,6 +162,16 @@ load_project_config() {
         return 0
     fi
 
+    # ── Guard 1: Are we inside a Git repository? ──
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        if [[ "${SUPPRESS_CONFIG_ERRORS:-false}" != "true" ]]; then
+            log_error "❌ Not inside a Git repository."
+            log_error "   Git Trident only works inside a Git project."
+            log_error "   Please navigate to a Git repository and try again."
+        fi
+        return 1
+    fi
+
     local global_config="$HOME/$GLOBAL_CONFIG_FILE_NAME"
     local project_config_files=(
         "./$CONFIG_FILE_NAME"    # Project root (explicit, committed)
@@ -245,6 +255,21 @@ load_project_config() {
         return 1
     fi
 
+    # ── Guard 2: Does a project config exist? ──
+    if [[ "$project_loaded" == "false" ]]; then
+        if [[ "${SUPPRESS_CONFIG_ERRORS:-false}" != "true" ]]; then
+            log_error "❌ No project configuration file found."
+            log_error "   Git Trident requires a project config to operate in this repository."
+            log_empty ""
+            log_error "💡 Run the following command to initialize your project config:"
+            log_error "     git trident config init"
+            log_empty ""
+            log_error "   This creates ./git-trident-config with your project's branch names,"
+            log_error "   tag prefixes, and workflow settings."
+        fi
+        return 1
+    fi
+
     # Record the primary source for diagnostics
     if [[ -n "$project_file" ]]; then
         export CONFIG_SOURCE="$project_file (+ $global_config)"
@@ -289,30 +314,6 @@ validate_config() {
             errors+=("Required configuration missing: $var")
         fi
     done
-
-    # Validate branch names are not empty
-    if [[ -z "$PRODUCTION_BRANCH" ]]; then
-        errors+=("PRODUCTION_BRANCH cannot be empty")
-    fi
-    if [[ -z "$STAGING_BRANCH" ]]; then
-        errors+=("STAGING_BRANCH cannot be empty")
-    fi
-    if [[ -z "$DEVELOP_BRANCH" ]]; then
-        errors+=("DEVELOP_BRANCH cannot be empty")
-    fi
-
-    # Validate tag prefixes
-    if [[ -z "$STAGING_TAG_PREFIX" ]]; then
-        errors+=("STAGING_TAG_PREFIX cannot be empty")
-    fi
-    if [[ -z "$PRODUCTION_TAG_PREFIX" ]]; then
-        errors+=("PRODUCTION_TAG_PREFIX cannot be empty")
-    fi
-
-    # Validate remote
-    if [[ -z "$REMOTE" ]]; then
-        errors+=("REMOTE cannot be empty")
-    fi
 
     # Validate multi-platform configuration if enabled
     if [[ "${PLATFORM_SPECIFIC_TAGS:-false}" == "true" ]]; then
@@ -1286,5 +1287,5 @@ create_temp_file() {
 # Initialize configuration - only auto-load in CLI mode (not hook mode or library mode)
 # Hooks set GIT_TRIDENT_HOOK_MODE=true and handle config loading themselves
 if [[ "${GIT_TRIDENT_HOOK_MODE:-false}" != "true" && "$1" != "--no-init" ]]; then
-    load_project_config || true
+    load_project_config || exit 1
 fi
