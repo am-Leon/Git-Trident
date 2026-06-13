@@ -122,9 +122,17 @@ setup_sandbox
 mkdir -p "$SANDBOX_DIR/remote.git"
 (cd "$SANDBOX_DIR/remote.git" && git init --bare >/dev/null 2>&1)
 
+# Export git identity so it propagates into bump-version.sh's git commit subshell
+export GIT_AUTHOR_NAME="Test User"
+export GIT_AUTHOR_EMAIL="test@example.com"
+export GIT_COMMITTER_NAME="Test User"
+export GIT_COMMITTER_EMAIL="test@example.com"
+
 (
     cd "$SANDBOX_DIR" || exit
     git init >/dev/null 2>&1
+    # Ensure branch is 'main' regardless of git version (older git defaults to 'master')
+    git checkout -b main >/dev/null 2>&1 || true
     git config user.name "Test User"
     git config user.email "test@example.com"
     
@@ -163,6 +171,9 @@ assert_success "$?" "Git tag v3.0.0 was successfully created"
     git tag -l | grep -q "v3.0.0"
 )
 assert_success "$?" "Git tag v3.0.0 was pushed to remote"
+
+# Clean up identity env vars
+unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
 cleanup_sandbox
 
