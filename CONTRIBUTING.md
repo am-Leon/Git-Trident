@@ -124,3 +124,10 @@ Run the release tool from the root of the repository to bump version configurati
 ./scripts/bump-version.sh 1.0.3 --release
 ```
 
+### CI/CD Pipeline
+
+- **Continuous Integration**: Pushes to `main`/`develop` and pull requests to `main` trigger tests on both Ubuntu and
+  macOS runner platforms (`.github/workflows/ci.yml`).
+- **Continuous Deployment**: When a new tag `v*` is pushed by `bump-version.sh`, the release workflow (
+  `.github/workflows/release.yml`) builds the distribution package, runs tests, and publishes a new GitHub Release with
+  the tarball attached.
