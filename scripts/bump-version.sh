@@ -142,7 +142,7 @@ if [[ "$RELEASE_FLAG" == "--release" ]]; then
     echo -e "  ${GREEN}✓${NC} Pushed tag: v$NEW_VERSION"
 
     echo ""
-    echo -e "${GREEN}✅ Release v$NEW_VERSION tagged and pushed — GitHub Actions will build the release.${NC}"
+    echo -e "${GREEN}✅ Release v$NEW_VERSION tagged and pushed successfully.${NC}"
 else
     echo -e "${YELLOW}💡 To release, run:${NC}"
     echo -e "   ./scripts/bump-version.sh $NEW_VERSION --release"
