@@ -239,6 +239,8 @@ git() {
         return 0
     elif [[ "$cmd" == "fetch" ]]; then
         return 0
+    elif [[ "$cmd" == "push" ]]; then
+        return 0
     elif [[ "$cmd" == "branch" && "$*" == "-vv" ]]; then
         echo "  feature/gone abc1234 [origin/feature/gone: gone] commit msg"
         echo "* develop abc1234 commit msg"

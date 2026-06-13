@@ -123,7 +123,7 @@ mkdir -p "$SANDBOX_DIR/remote.git"
 (cd "$SANDBOX_DIR/remote.git" && git init --bare >/dev/null 2>&1)
 
 (
-    cd "$SANDBOX_DIR"
+    cd "$SANDBOX_DIR" || exit
     git init >/dev/null 2>&1
     git config user.name "Test User"
     git config user.email "test@example.com"
@@ -138,28 +138,28 @@ mkdir -p "$SANDBOX_DIR/remote.git"
 
 # Run release
 (
-    cd "$SANDBOX_DIR"
+    cd "$SANDBOX_DIR" || exit
     bash scripts/bump-version.sh "3.0.0" --release >/dev/null 2>&1
 )
 assert_success "$?" "Release mode completes successfully under mock git environment"
 
 # Verify mock git repository has the bump commit
 (
-    cd "$SANDBOX_DIR"
+    cd "$SANDBOX_DIR" || exit
     git log -1 --format="%s" | grep -q "Bump version to 3.0.0"
 )
 assert_success "$?" "Git log has the bump version commit message"
 
 # Verify tag was created
 (
-    cd "$SANDBOX_DIR"
+    cd "$SANDBOX_DIR" || exit
     git tag -l | grep -q "v3.0.0"
 )
 assert_success "$?" "Git tag v3.0.0 was successfully created"
 
 # Verify tag was pushed to remote
 (
-    cd "$SANDBOX_DIR/remote.git"
+    cd "$SANDBOX_DIR/remote.git" || exit
     git tag -l | grep -q "v3.0.0"
 )
 assert_success "$?" "Git tag v3.0.0 was pushed to remote"
