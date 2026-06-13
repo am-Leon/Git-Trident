@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run all tests
+        run: bash tests/run_all.sh
+
+  version-sync-check:
+    name: Version Sync Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify version consistency
+        run: |
+          CONST_VER=$(grep 'TRIDENT_VERSION=' lib/git-trident-constants.sh | cut -d'"' -f2)
+          # Extract version strings from test assertions
+          TEST_VERSIONS=$(grep -oP '"\d+\.\d+\.\d+"' tests/test_remote_installation.sh | tr -d '"' | sort -u)
+          
+          echo "Constants version: $CONST_VER"
+          echo "Test versions found: $TEST_VERSIONS"
+          
+          for ver in $TEST_VERSIONS; do
+            if [[ "$ver" != "$CONST_VER" ]]; then
+              echo "::error::Version mismatch! constants=$CONST_VER tests=$ver"
+              echo "Fix: ./scripts/bump-version.sh $CONST_VER"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All versions are in sync: $CONST_VER"
