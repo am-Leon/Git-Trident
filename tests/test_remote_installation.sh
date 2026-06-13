@@ -20,7 +20,7 @@ unset TRIDENT_VERSION
 unset GITHUB_REPO
 unset GITHUB_RELEASE_API
 source "$PROJECT_ROOT/lib/git-trident-constants.sh"
-assert_equals "$TRIDENT_VERSION" "0.1.0" "Version constant is correct"
+assert_equals "$TRIDENT_VERSION" "0.1.1" "Version constant is correct"
 assert_equals "$GITHUB_REPO" "am-Leon/Git-Trident" "GitHub repo constant is correct"
 assert_equals "$GITHUB_RELEASE_API" "https://api.github.com/repos/am-Leon/Git-Trident/releases/latest" "Release API constant is correct"
 
@@ -39,7 +39,7 @@ export STAGING_TAG_PREFIX="staging/"
 export PRODUCTION_TAG_PREFIX="production/"
 
 source "$PROJECT_ROOT/lib/git-trident-common.sh" --no-init >/dev/null 2>&1
-assert_equals "$TRIDENT_VERSION" "0.1.0" "Version loaded via common.sh"
+assert_equals "$TRIDENT_VERSION" "0.1.1" "Version loaded via common.sh"
 assert_equals "$GITHUB_REPO" "am-Leon/Git-Trident" "GitHub repo loaded via common.sh"
 
 # RI_04_BUILD_SCRIPT_SYNCS_REPO
