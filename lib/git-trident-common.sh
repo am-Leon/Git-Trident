@@ -11,6 +11,11 @@ if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-constants.sh" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/git-trident-constants.sh"
 fi
 
+# Load the tag grammar (gt_regex_escape, gt_rc_suffix, gt_tag_*, gt_re_*).
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh"
+fi
+
 # Load repository context helpers (GT_REPO_ROOT / GT_GIT_DIR, gt_repo_path,
 # gt_git_path). Sourcing only DEFINES them; resolution happens in
 # load_project_config, because utility commands run outside a repository.

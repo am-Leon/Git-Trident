@@ -610,8 +610,22 @@ show_hotfix_completion_summary() {
 staging_hotfix_finish() {
     local version="$1"
     local hotfix_branch="${HOTFIX_STAGING_PREFIX}${version}"
+
+    # Hold the RC lock across "allocate number -> create tag".
+    #
+    # get_next_rc_number used to try to lock internally and released the lock
+    # before returning, so the critical section — which only ends once the tag
+    # exists — was never actually covered. The trap ensures an interrupted
+    # command does not leave the lock directory behind.
+    if ! gt_acquire_rc_lock; then
+        log_error "Could not acquire the RC allocation lock."
+        log_info  "Another Git Trident operation may be running in this repository."
+        return 1
+    fi
+    trap 'gt_release_rc_lock' EXIT INT TERM
+
     local rc_number=$(get_next_rc_number "$version")
-    
+
     local suffix="$(get_rc_suffix)"
     local tag_name="${STAGING_TAG_PREFIX}${version}${suffix}${rc_number}"
     local latest_rc=$(get_latest_rc_for_version "$version")
@@ -680,5 +694,7 @@ staging_hotfix_finish() {
     # Step 7: Show summary
     show_hotfix_completion_summary "$version" "$rc_number" "$tag_name"
 
+    gt_release_rc_lock
+    trap - EXIT INT TERM
     return 0
 }

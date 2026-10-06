@@ -79,6 +79,38 @@ inside [lib/git-trident-help.sh](lib/git-trident-help.sh):
 
 ---
 
+## 📐 Code Conventions
+
+### Bash compatibility
+
+Git Trident runs on **Bash 3.2+** — macOS ships 3.2.57 at `/bin/bash` and it cannot be
+replaced. See `docs/REMEDIATION_PLAN.md` §0.3 and §11 for the rules and a cookbook of
+3.2-safe equivalents. `tests/test_bash32_compat.sh` enforces them, and
+`tests/run_all.sh` runs the suite under the platform's own bash.
+
+### Return-value convention
+
+| Prefix | `return 0` means |
+|---|---|
+| `check_*`, `validate_*`, `verify_*` | healthy / valid |
+| `has_*`, `is_*`, `*_exists` | true |
+
+Mixing these is what made a repository with no tags report "Deprecated tags exist".
+
+### Output streams
+
+Logs go to **stderr** (`log_info`, `log_warn`, `log_error`, `log_step`, `log_empty`).
+Only values a caller consumes go to **stdout**. Printing a table to stdout in the middle
+of a stderr log stream makes either redirection useless.
+
+### Returning multiple values
+
+Set named globals (`GT_ARG_*`, `GT_OUT_*`) — never `echo "$a $b"` for the caller to split
+with `read`. Empty fields collapse under the default IFS and shift every later field, and
+`exit` inside a command substitution terminates only the subshell.
+
+---
+
 ## 🧪 Testing Strategy
 
 Automated test suites are located in the `tests/` directory.

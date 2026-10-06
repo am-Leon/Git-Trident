@@ -2,6 +2,15 @@
 # Git Trident Version Utilities - Comprehensive tag and version management
 # Supports both single-environment and multi-platform modes
 
+# This file is sourced on its own in several places (tests, and libs that pull in
+# version utilities without common.sh), so it must satisfy its own dependency on
+# the tag grammar rather than assume a caller already loaded it.
+if ! declare -f gt_rc_suffix >/dev/null 2>&1; then
+    if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh" ]]; then
+        source "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh"
+    fi
+fi
+
 # =============================================================================
 # VERSION PARSING AND VALIDATION
 # =============================================================================
@@ -42,9 +51,11 @@ extract_base_version() {
 # Input: 1.2.3-rc-02 → Output: 02
 extract_rc_number() {
     local version="$1"
-    local suffix="$(get_rc_suffix)"
+    # Escaped pattern: STAGING_TAG_SUFFIX is user-configurable and may contain
+    # regex metacharacters (see git-trident-tagspec.sh).
+    local re; re="$(gt_re_rc_tail)"
 
-    if [[ "$version" =~ .*${suffix}([0-9][0-9]*)$ ]]; then
+    if [[ "$version" =~ $re ]]; then
         echo "${BASH_REMATCH[1]}"
     else
         echo ""
@@ -94,7 +105,8 @@ validate_platform_specific_version() {
 
     # Format: platform-MAJOR.MINOR.PATCH[SUFFIX-XX]
     local suffix="$(get_rc_suffix)"
-    if [[ ! "$version" =~ ^([a-zA-Z0-9_-]+)-([0-9]+)\.([0-9]+)\.([0-9]+)(${suffix}[0-9]+)?$ ]]; then
+    local re; re="^([a-zA-Z0-9_-]+)-([0-9]+)\.([0-9]+)\.([0-9]+)$(gt_re_rc_optional)\$"
+    if [[ ! "$version" =~ $re ]]; then
         log_error "Invalid platform-specific version format: $version"
         log_info "Expected format: platform-MAJOR.MINOR.PATCH[${suffix}XX]"
         log_info "Example: android-1.2.3 or ios-2.0.1${suffix}01"
@@ -136,7 +148,8 @@ validate_legacy_version() {
 
     # Format: MAJOR.MINOR.PATCH[SUFFIX-XX]
     local suffix="$(get_rc_suffix)"
-    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(${suffix}[0-9]+)?$ ]]; then
+    local re; re="^([0-9]+)\.([0-9]+)\.([0-9]+)$(gt_re_rc_optional)\$"
+    if [[ ! "$version" =~ $re ]]; then
         log_error "Invalid legacy version format: $version"
         log_info "Expected format: MAJOR.MINOR.PATCH[${suffix}XX]"
         log_info "Example: 1.2.3 or 2.0.1${suffix}01"
@@ -326,39 +339,58 @@ get_all_production_tags() {
 # RC NUMBER MANAGEMENT
 # =============================================================================
 
+# Kept as the historical name; the grammar now lives in git-trident-tagspec.sh.
 get_rc_suffix(){
-  echo "${STAGING_TAG_SUFFIX:--rc-}"
+  gt_rc_suffix
 }
 
 # Get next RC number for a version
 get_next_rc_number() {
     local version="$1"
-    local lock_file="$(gt_git_path git-trident-rc-lock)"
 
-    # Simple locking mechanism to prevent race conditions
-    local max_wait=10
-    local waited=0
-    while [ -f "$lock_file" ] && [ $waited -lt $max_wait ]; do
-        sleep 0.5
-        waited=$((waited + 1))
-    done
-    touch "$lock_file"
-
-    local latest_rc=$(get_latest_rc_for_version "$version")
+    # NOTE: this function only COMPUTES the next number; it does not reserve it.
+    # The caller must hold the RC lock across "compute -> create tag", because
+    # the value is stale the moment another process creates a tag.
+    #
+    # The previous implementation tried to lock here and got it wrong three ways:
+    #   * `[ -f "$lock" ]` then `touch "$lock"` is a check-then-act race, not an
+    #     atomic acquisition (mkdir is — see acquire_lock in common.sh);
+    #   * after max_wait it proceeded WITHOUT the lock rather than failing;
+    #   * it released the lock before returning, so the critical section — which
+    #     ends when the tag is created, in the caller — was never covered.
+    local latest_rc; latest_rc=$(get_latest_rc_for_version "$version")
     local next_rc="01"
 
     if [ -n "$latest_rc" ]; then
-        local current_rc=$(extract_rc_number "$latest_rc")
+        local current_rc; current_rc=$(extract_rc_number "$latest_rc")
         if [ -n "$current_rc" ]; then
-            # Remove leading zeros for arithmetic
-            local current_num=$(echo "$current_rc" | sed 's/^0*//')
+            # Strip leading zeros so 08/09 are not read as invalid octal.
+            local current_num; current_num=$(echo "$current_rc" | sed 's/^0*//')
+            : "${current_num:=0}"
             next_rc=$(printf "%02d" $((current_num + 1)))
         fi
     fi
 
-    # Release lock
-    rm -f "$lock_file"
     echo "$next_rc"
+}
+
+# Reserve the RC namespace for the duration of a release/hotfix completion.
+#
+# Wraps the atomic mkdir-based lock in common.sh. Callers MUST pair this with
+# gt_release_rc_lock, and should install a trap so an interrupted command does
+# not leave the lock behind.
+gt_acquire_rc_lock() {
+    if declare -f acquire_lock >/dev/null 2>&1; then
+        acquire_lock "rc-allocation" || return 1
+    fi
+    return 0
+}
+
+gt_release_rc_lock() {
+    if declare -f release_lock >/dev/null 2>&1; then
+        release_lock "rc-allocation"
+    fi
+    return 0
 }
 
 # Get next RC number for version (for rebase operations)
@@ -420,8 +452,8 @@ extract_base_version_from_tag() {
     local version=$(echo "$tag" | sed "s|^${prefix}||")
     local suffix="$(get_rc_suffix)"
 
-    # Remove RC suffix if present
-    echo "$version" | sed "s|${suffix}[0-9]*$||"
+    # Remove RC suffix if present (escaped — see git-trident-tagspec.sh)
+    echo "$version" | sed "$(gt_sed_strip_rc)"
 }
 
 # Extract full version from tag (without prefix)

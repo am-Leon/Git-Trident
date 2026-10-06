@@ -63,7 +63,8 @@ analyze_tag_propagation_impact() {
         clean_tag="${tag#"${PRODUCTION_TAG_PREFIX}"}"
         tag_type="production"
     else
-        echo "unknown:unknown:0:unknown:unknown"
+        # Always SIX fields: callers read six with IFS=':'.
+        echo "unknown:unknown:0:unknown:unknown:❓"
         return
     fi
 
@@ -72,7 +73,7 @@ analyze_tag_propagation_impact() {
     local platform_type=$(get_platform_type_from_version "$clean_tag")
 
     if [ -z "$platform" ] || [ -z "$platform_type" ]; then
-        echo "unknown:unknown:0:unknown:$tag_type"
+        echo "unknown:unknown:0:unknown:$tag_type:❓"
         return
     fi
 
@@ -1005,7 +1006,16 @@ perform_push_operations() {
 # ARGUMENT PARSING AND HELP
 # =============================================================================
 
+# Sets GT_ARG_REMOTE / GT_ARG_PLATFORM. Does NOT echo a result.
+#
+# The previous form echoed "$remote $platform_filter" and the caller split it
+# with `read`, which loses empty fields; it also meant the `exit 1` below ran
+# inside a command substitution, terminating only the subshell while main()
+# continued with an empty remote.
 parse_arguments() {
+    GT_ARG_REMOTE="$REMOTE"
+    GT_ARG_PLATFORM=""
+
     local remote="$REMOTE"
     local platform_filter=""
 
@@ -1028,7 +1038,9 @@ parse_arguments() {
         shift
     done
 
-    echo "$remote $platform_filter"
+    GT_ARG_REMOTE="$remote"
+    GT_ARG_PLATFORM="$platform_filter"
+    return 0
 }
 
 # =============================================================================
@@ -1037,7 +1049,9 @@ parse_arguments() {
 
 main() {
     # Parse arguments
-    IFS=' ' read -r remote platform_filter <<< "$(parse_arguments "$@")"
+    parse_arguments "$@" || exit 1
+    local remote="$GT_ARG_REMOTE"
+    local platform_filter="$GT_ARG_PLATFORM"
 
     # Initialize
     log_info "🚀 Git Trident Push All"

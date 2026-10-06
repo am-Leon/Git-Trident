@@ -519,7 +519,12 @@ staging_sync_tags() {
 # ARGUMENT PARSING
 # =============================================================================
 
+# Sets GT_ARG_VERSION / GT_ARG_CHECK_ONLY. Does NOT echo a result — see the
+# note in bin/git-trident-push-all for why echo-returns were removed.
 parse_arguments() {
+    GT_ARG_VERSION=""
+    GT_ARG_CHECK_ONLY=false
+
     local version=""
     local check_only=false
 
@@ -553,7 +558,9 @@ parse_arguments() {
         exit 1
     fi
 
-    echo "$version $check_only"
+    GT_ARG_VERSION="$version"
+    GT_ARG_CHECK_ONLY="$check_only"
+    return 0
 }
 
 # =============================================================================
@@ -561,12 +568,10 @@ parse_arguments() {
 # =============================================================================
 
 main() {
-    # Parse arguments
-    local args_result
-    args_result=$(parse_arguments "$@")
-
-    # Use array approach to parse results
-    IFS=' ' read -r version check_only <<< "$args_result"
+    # Parse arguments (sets GT_ARG_*; exits directly on bad input)
+    parse_arguments "$@" || exit 1
+    local version="$GT_ARG_VERSION"
+    local check_only="$GT_ARG_CHECK_ONLY"
 
     # Run pre-operation checks
     if ! pre_operation_checks "staging-sync-tags"; then

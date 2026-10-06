@@ -264,12 +264,15 @@ show_platform_summary() {
         fi
 
         # Format output
+        # To stderr, like every other log line. Writing this to stdout put a
+        # table in the middle of a stderr log stream, so redirecting either one
+        # produced fragmented, interleaved output.
         printf "  %s %-15s %s | Prod: %-20s | Staging: %-25s\n" \
             "$sync_status" \
             "$type_symbol $platform" \
             "$sync_message" \
             "${latest_prod:-None} ($prod_count)" \
-            "${latest_staging:-None} ($staging_count)"
+            "${latest_staging:-None} ($staging_count)" >&2
     done
     log_empty ""
 }
@@ -403,6 +406,12 @@ check_tag_patterns() {
     return "$([ "$all_correct" = true ] && echo 0 || echo 1)"
 }
 
+# NOTE ON NAMING (A6 convention):
+#   check_* / validate_* / verify_*  -> return 0 means HEALTHY / VALID
+#   has_*   / is_*   / *_exists      -> return 0 means TRUE
+# The two helpers below report a FINDING, so they are has_*, not check_*.
+# Mixing the two conventions is what made a tagless repository announce
+# "Deprecated tags exist".
 check_deprecated_tags() {
     local silent="${1:-false}"
     local show_deprecated="${2:-false}"
@@ -413,13 +422,13 @@ check_deprecated_tags() {
     if is_platform_specific_mode; then
         # Platform-specific mode: check each platform separately
         for platform in $PLATFORMS; do
-            if check_deprecated_tags_for_platform "$platform" "$silent" "$show_deprecated"; then
+            if has_deprecated_tags_for_platform "$platform" "$silent" "$show_deprecated"; then
                 has_deprecated_tags=true
             fi
         done
     else
         # Legacy mode: single check
-        if check_deprecated_tags_legacy "$silent" "$show_deprecated"; then
+        if has_deprecated_tags_legacy "$silent" "$show_deprecated"; then
             has_deprecated_tags=true
         fi
     fi
@@ -438,7 +447,7 @@ check_deprecated_tags() {
     fi
 }
 
-check_deprecated_tags_for_platform() {
+has_deprecated_tags_for_platform() {
     local platform="$1"
     local silent="$2"
     local show_deprecated="$3"
@@ -498,7 +507,7 @@ check_deprecated_tags_for_platform() {
     [ "$has_deprecated_tags" = true ]
 }
 
-check_deprecated_tags_legacy() {
+has_deprecated_tags_legacy() {
     local silent="$1"
     local show_deprecated="$2"
     local has_deprecated_tags=false
@@ -510,7 +519,7 @@ check_deprecated_tags_legacy() {
         if [ "$show_deprecated" = true ]; then
             [ "$silent" = false ] && log_info "  ✅ No production tags found (no deprecated tags possible)"
         fi
-        # See the note in check_deprecated_tags_for_platform: 0 means "found".
+        # See the note in has_deprecated_tags_for_platform: 0 means "found".
         return 1
     fi
 
@@ -1526,20 +1535,18 @@ show_brief_status() {
     local all_branches_synced=true
 
     # Check production → staging
-    echo -n "  Production → Staging: "
     if check_branch_sync_status "$PRODUCTION_BRANCH" "$STAGING_BRANCH" "subset" true; then
-        echo "✅"
+        log_empty "  Production → Staging: ✅"
     else
-        echo "❌"
+        log_empty "  Production → Staging: ❌"
         all_branches_synced=false
     fi
 
     # Check staging → develop
-    echo -n "  Staging → Develop: "
     if check_branch_sync_status "$STAGING_BRANCH" "$DEVELOP_BRANCH" "subset" true; then
-        echo "✅"
+        log_empty "  Staging → Develop: ✅"
     else
-        echo "❌"
+        log_empty "  Staging → Develop: ❌"
         all_branches_synced=false
     fi
 
