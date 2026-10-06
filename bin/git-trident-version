@@ -667,8 +667,12 @@ check_for_updates() {
 
 parse_arguments() {
     local command=""
+    # Honour the global --dry-run / --yes consumed by the dispatcher, while the
+    # command's own flags keep working for direct invocation.
     DRY_RUN=false
+    gt_is_dry_run && DRY_RUN=true
     SKIP_CONFIRM=false
+    [[ "${GT_ASSUME_YES:-false}" == "true" ]] && SKIP_CONFIRM=true
 
     while [[ $# -gt 0 ]]; do
         case "$1" in

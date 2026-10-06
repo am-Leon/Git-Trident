@@ -112,6 +112,14 @@ create_production_release_branch() {
     log_info "Automatically using latest staging RC: $staging_tag"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "check out $staging_tag"
+        gt_would "create branch $release_branch"
+        gt_would "(on finish) create tag ${PRODUCTION_TAG_PREFIX}${version}"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Checkout the staging RC
@@ -293,6 +301,16 @@ production_release_finish() {
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "merge $release_branch into $PRODUCTION_BRANCH"
+        gt_would "create tag $tag_name from $PRODUCTION_BRANCH"
+        gt_would "merge $PRODUCTION_BRANCH into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $release_branch"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Validate release branch exists
@@ -446,6 +464,14 @@ create_production_hotfix_branch() {
     log_info "Auto-detected next version: $next_version"
     log_info "Starting from latest production branch"
     log_info "=========================================="
+
+    if gt_is_dry_run; then
+        gt_would "check out $PRODUCTION_BRANCH"
+        gt_would "create branch $hotfix_branch"
+        gt_would "(on finish) create tag ${PRODUCTION_TAG_PREFIX}${next_version}"
+        gt_dry_run_stop
+        return 1
+    fi
 
     assert_clean_working_tree
 
@@ -617,6 +643,16 @@ production_hotfix_finish() {
     log_info "Using branch: $hotfix_branch"
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
+
+    if gt_is_dry_run; then
+        gt_would "merge $hotfix_branch into $PRODUCTION_BRANCH"
+        gt_would "create tag $tag_name from $PRODUCTION_BRANCH"
+        gt_would "merge $PRODUCTION_BRANCH into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $hotfix_branch"
+        gt_dry_run_stop
+        return 0
+    fi
 
     assert_clean_working_tree
 

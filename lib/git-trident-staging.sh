@@ -144,6 +144,14 @@ create_staging_release_branch() {
     
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "check out $starting_point"
+        gt_would "create branch $release_branch"
+        gt_would "(on finish) create tag $staging_tag"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Checkout starting point
@@ -311,6 +319,16 @@ staging_release_finish() {
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "create tag $tag_name from $release_branch"
+        gt_would "merge $release_branch into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $release_branch"
+        [ "${AUTO_PUSH_ON_FINISH:-false}" = "true" ] && gt_would "push branches and tags to $REMOTE"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Validate release branch exists
@@ -425,6 +443,14 @@ create_staging_hotfix_branch() {
     log_info "New RC Number: $rc_number"
     log_info "Will create tag: $staging_tag"
     log_info "=========================================="
+
+    if gt_is_dry_run; then
+        gt_would "check out $latest_rc"
+        gt_would "create branch $hotfix_branch"
+        gt_would "(on finish) create tag $staging_tag"
+        gt_dry_run_stop
+        return 0
+    fi
 
     assert_clean_working_tree
 
@@ -643,6 +669,17 @@ staging_hotfix_finish() {
     log_info "New RC Number: $rc_number"
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
+
+    if gt_is_dry_run; then
+        gt_would "create tag $tag_name from $hotfix_branch"
+        gt_would "merge $hotfix_branch into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $hotfix_branch"
+        gt_dry_run_stop
+        gt_release_rc_lock
+        trap - EXIT INT TERM
+        return 0
+    fi
 
     assert_clean_working_tree
 

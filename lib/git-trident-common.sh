@@ -867,6 +867,34 @@ assert_clean_working_tree() {
 }
 
 # =============================================================================
+# DRY RUN
+# =============================================================================
+#
+# A dry run that quietly performs some mutations is worse than none at all, so
+# this is enforced at the point of mutation and the flows STOP before their
+# first write rather than trying to simulate a merge they cannot predict.
+#
+# GT_DRY_RUN is exported by bin/git-trident so it survives the `exec` into a
+# subcommand. Like --yes, it is a per-invocation runtime flag rather than
+# configuration.
+
+gt_is_dry_run() {
+    [[ "${GT_DRY_RUN:-false}" == "true" ]]
+}
+
+# Report an action that was NOT taken.
+gt_would() {
+    log_info "   [dry-run] would $1"
+}
+
+# Announce that a flow is stopping before it changes anything.
+gt_dry_run_stop() {
+    log_empty ""
+    log_warn "🔍 DRY RUN — nothing was changed."
+    log_info "   Re-run without --dry-run to perform the steps above."
+}
+
+# =============================================================================
 # JSON OUTPUT
 # =============================================================================
 #

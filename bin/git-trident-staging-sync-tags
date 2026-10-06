@@ -536,7 +536,11 @@ parse_arguments() {
     GT_ARG_CHECK_ONLY=false
 
     local version=""
+    # The dispatcher consumes a global --dry-run and exports GT_DRY_RUN, so this
+    # command's own --dry-run keeps working for direct invocation while
+    # `git trident --dry-run staging sync-tags ...` works too.
     local check_only=false
+    gt_is_dry_run && check_only=true
 
     while [[ $# -gt 0 ]]; do
         case "$1" in

@@ -1136,7 +1136,7 @@ Items **not** absorbed by Phase 3:
 | ID  | Enhancement                                            | Rationale                                                                                              | Size |
 |-----|--------------------------------------------------------|--------------------------------------------------------------------------------------------------------|------|
 | ~~E1~~ | `--json` on `status`, `verify-sync`, `tags`, `version` | **DONE — `status --json` / `verify-sync --json`: 14 fields on stdout, logs on stderr, verified to parse** | M |
-| E2  | `--dry-run` on every mutating command                  | Only `sync-tags` has it today; the highest-risk commands (`release finish`, `hotfix finish`) have none | M    |
+| ~~E2~~ | `--dry-run` on every mutating command | **DONE — global `--dry-run`; flows stop before their first write rather than simulating merges; every command verified byte-identical** | M |
 | ~~E3~~ | `git trident doctor` | **DONE — five layers in dependency order; stops once an upstream layer is broken; also detects orphaned temp branches, a merge in progress, and stale locks** | S |
 | ~~E4~~ | `git trident abort` | **DONE — reports the exact state, then undoes only LOCAL, UNPUSHED refs; `--dry-run` reports and stops** | M |
 | ~~E5~~ | Global `--yes` / `--non-interactive` | **DONE — consumed by the dispatcher and exported so it survives `exec`; `force_confirm_action` deliberately NOT silenced** | S |

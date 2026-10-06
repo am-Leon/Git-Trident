@@ -236,7 +236,13 @@ EOF
 }
 
 main() {
+    # The dispatcher consumes a global --dry-run and exports GT_DRY_RUN, so the
+    # flag never reaches this script's own parser. Without honouring it here,
+    # `git trident abort --dry-run` performed a REAL abort — deleting tags and
+    # branches the user had asked only to be shown.
     local dry_run=false
+    gt_is_dry_run && dry_run=true
+
     while [ $# -gt 0 ]; do
         case "$1" in
             --dry-run|--check) dry_run=true ;;

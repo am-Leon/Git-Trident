@@ -1121,6 +1121,24 @@ main() {
         exit 0
     fi
 
+    # Stop here under --dry-run: the summary above is the whole report, and
+    # nothing below it is reversible.
+    if gt_is_dry_run; then
+        local b
+        for b in "$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH"; do
+            check_branch_exists "$b" || continue
+            case "$(get_branch_push_status "$b" "$remote")" in
+                has_changes|new_branch) gt_would "push branch $b to $remote" ;;
+            esac
+        done
+        local t
+        while IFS= read -r t; do
+            [ -n "$t" ] && gt_would "push tag $t to $remote"
+        done <<< "$(get_unpushed_tags "$remote" "$platform_filter")"
+        gt_dry_run_stop
+        exit 0
+    fi
+
     # Confirm push
     if ! confirm_action "Proceed with push?"; then
         log_info "Push cancelled"

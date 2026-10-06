@@ -63,6 +63,7 @@ GT_FILTERED_ARGS=()
 for _arg in "$@"; do
     case "$_arg" in
         --yes|-y|--non-interactive) export GT_ASSUME_YES=true ;;
+        --dry-run)                  export GT_DRY_RUN=true ;;
         --no-color|--no-colour)     export GT_COLOR=never ;;
         --debug)                    export DEBUG=true ;;
         *) GT_FILTERED_ARGS+=("$_arg") ;;

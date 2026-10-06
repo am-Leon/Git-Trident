@@ -130,6 +130,15 @@ prune_staging_tags() {
     done
     echo ""
 
+    if gt_is_dry_run; then
+        local t
+        for t in ${tags_to_delete[@]+"${tags_to_delete[@]}"}; do
+            gt_would "delete tag $t (local and $REMOTE)"
+        done
+        gt_dry_run_stop
+        return 0
+    fi
+
     # 4. Confirm Deletion
     if ! confirm_action "Delete these $count tags from LOCAL and REMOTE ($REMOTE)?"; then
         log_info "Operation cancelled."
@@ -314,6 +323,13 @@ sync_local_branches() {
     done
     echo ""
 
+    if gt_is_dry_run; then
+        local sb
+        for sb in "${stale_branches[@]}"; do gt_would "delete stale local branch $sb"; done
+        gt_dry_run_stop
+        return 0
+    fi
+
     if confirm_action "Delete these ${#stale_branches[@]} stale local branch(es)?"; then
         local deleted=0
         local failed=0
@@ -377,6 +393,12 @@ prune_temp_branches() {
     echo ""
     log_warn "These are internal working branches. Their content was either already"
     log_warn "captured in a new RC tag, or the sync that created them did not finish."
+
+    if gt_is_dry_run; then
+        for b in "${temps[@]}"; do gt_would "delete branch $b"; done
+        gt_dry_run_stop
+        return 0
+    fi
 
     if ! confirm_action "Delete these ${#temps[@]} branch(es)?"; then
         log_info "Operation cancelled."
