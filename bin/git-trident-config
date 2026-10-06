@@ -72,8 +72,6 @@ _ask_bool() {
     [[ "$answer" =~ ^[Yy] ]] && echo "true" || echo "false"
 }
 
-_write_line() { echo "$1" >> "$OUTPUT_FILE"; }
-
 # =============================================================================
 # INIT COMMAND
 # =============================================================================
@@ -241,9 +239,6 @@ CMD_MIN_WORD_COUNT=${cmd_words}
 CHANGELOG_QA_EXCLUDED_PREFIXES="${qa_excl}"
 CHANGELOG_RELEASE_EXCLUDED_PREFIXES="${rel_excl}"
 # [DEPRECATED / DISABLED] Changelog webhook delivery is not a completed feature and needs a refactor.
-# CHANGELOG_WEBHOOK_URL=""
-# CHANGELOG_WEBHOOK_AUTH=""
-# CHANGELOG_WEBHOOK_FORMAT="raw"
 EOF
 
     log_empty ""

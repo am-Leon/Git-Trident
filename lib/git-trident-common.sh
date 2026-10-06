@@ -69,9 +69,6 @@ OPTIONAL_CONFIG_VARS=(
     # Changelog & Release Notes
     "CHANGELOG_QA_EXCLUDED_PREFIXES="
     "CHANGELOG_RELEASE_EXCLUDED_PREFIXES=wip|cmd"
-    "CHANGELOG_WEBHOOK_URL="
-    "CHANGELOG_WEBHOOK_AUTH="
-    "CHANGELOG_WEBHOOK_FORMAT=slack"
 )
 
 # Keys that belong ONLY in the global config (~/$GLOBAL_CONFIG_FILE_NAME).
@@ -501,37 +498,6 @@ validate_all_platform_names() {
     done
 }
 
-# Validate platform-specific configuration
-validate_platform_config() {
-    local errors_ref_name="$1"  # Name of the errors array
-
-    # Validate PLATFORMS is set and not empty
-    if [[ -z "${PLATFORMS:-}" ]]; then
-        eval "$errors_ref_name+=(\"PLATFORMS cannot be empty when PLATFORM_SPECIFIC_TAGS=true\")"
-        return
-    fi
-
-    # Validate PLATFORMS is a space-separated list
-    if [[ ! "$PLATFORMS" =~ ^[a-zA-Z0-9_-]+( [a-zA-Z0-9_-]+)*$ ]]; then
-        eval "$errors_ref_name+=(\"PLATFORMS must be a space-separated list of platform names\")"
-        eval "$errors_ref_name+=(\"Example: PLATFORMS=\\\"android ios web\\\"\")"
-        return
-    fi
-    
-    # Log platform configuration
-    log_debug "Platform-specific mode enabled"
-    log_debug "Supported platforms: $PLATFORMS"
-    log_debug "Common platforms: $COMMON_PLATFORMS"
-    log_debug "Independent platforms: $INDEPENDENT_PLATFORMS"
-
-    # Validate each platform name
-    for platform in $PLATFORMS; do
-        if [[ ! "$platform" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
-            eval "$errors_ref_name+=(\"Invalid platform name: '$platform'. Must start with letter and contain only letters, numbers, hyphens, or underscores.\")"
-        fi
-    done
-}
-
 # Setup optional configuration defaults
 setup_optional_config_defaults() {
     for optional_var in "${OPTIONAL_CONFIG_VARS[@]}"; do
@@ -565,15 +531,6 @@ is_platform_specific_mode() {
     [[ "${PLATFORM_SPECIFIC_TAGS:-false}" == "true" ]]
 }
 
-# Get list of platforms as array
-get_platforms_array() {
-    if is_platform_specific_mode && [[ -n "${PLATFORMS:-}" ]]; then
-        echo "$PLATFORMS"  # Return as space-separated string
-    else
-        echo ""
-    fi
-}
-
 # Check if a platform is common/shared
 is_common_platform() {
     local platform="$1"
@@ -598,18 +555,6 @@ is_independent_platform() {
 
     # Use regex pattern to check if platform is in INDEPENDENT_PLATFORMS
     [[ " $INDEPENDENT_PLATFORMS " =~ " $platform " ]]
-}
-
-# Get all dependent platforms for a common platform
-# Returns all INDEPENDENT_PLATFORMS (since common → all independent)
-get_dependent_platforms() {
-    if ! is_platform_specific_mode; then
-        log_error "Cannot get dependent platforms in single-environment mode"
-        echo ""
-        return 1
-    fi
-
-    echo "$INDEPENDENT_PLATFORMS"
 }
 
 # Get platform type (common or independent)
@@ -1253,17 +1198,6 @@ detect_platform() {
 # Initialize platform detection
 OS_PLATFORM=$(detect_platform)
 
-# Cross-platform path normalization
-normalize_path() {
-    local path="$1"
-    if [[ "$OS_PLATFORM" == "windows" ]]; then
-        # Convert to Windows-style path if needed, but keep POSIX for Git Bash
-        echo "$path" | sed 's/\\/\//g'
-    else
-        echo "$path"
-    fi
-}
-
 # Cross-platform stat command for cache age checking
 get_file_age() {
     local file="$1"
@@ -1305,24 +1239,6 @@ sed_in_place() {
             ;;
         *)
             sed -i "$script" "$file"
-            ;;
-    esac
-}
-
-# Ensure consistent sorting across platforms
-safe_sort() {
-    LC_ALL=C sort "$@"
-}
-
-# Cross-platform temporary file creation
-create_temp_file() {
-    case "$OS_PLATFORM" in
-        windows)
-            # Use Windows-compatible temp file creation
-            mktemp 2>/dev/null || echo "/tmp/git-trident-temp.$$"
-            ;;
-        *)
-            mktemp
             ;;
     esac
 }

@@ -129,27 +129,6 @@ get_valid_commit_prefixes() {
     echo "${result% }"  # Remove trailing space
 }
 
-# Get description for a specific prefix
-get_prefix_description() {
-    local prefix="$1"
-    local prefix_without_colon=$(echo "$prefix" | sed 's/:$//')
-
-    if ! parse_commit_prefix_config 2>/dev/null; then
-        return 1
-    fi
-
-    for i in "${!COMMIT_PREFIX_ARRAY[@]}"; do
-        if [[ "${COMMIT_PREFIX_ARRAY[$i]}" == "$prefix" ]]; then
-            log_debug "Description for $prefix: ${COMMIT_DESC_ARRAY[$i]}"
-            echo "${COMMIT_DESC_ARRAY[$i]}"
-            return 0
-        fi
-    done
-
-    log_debug "No description found for prefix: $prefix"
-    echo ""
-}
-
 # =============================================================================
 # HOOK ENABLED CHECK (Shared)
 # =============================================================================
@@ -244,24 +223,3 @@ run_local_project_hook() {
 # =============================================================================
 # WIP COMMIT DETECTION (Shared with pre-push hook)
 # =============================================================================
-
-# Check if commit message is WIP
-is_wip_commit() {
-    local commit_msg="$1"
-
-    # Check for wip: prefix (with or without platform)
-    if [[ "$commit_msg" =~ ^(\[.*\][[:space:]]+)?wip: ]]; then
-        return 0  # Is WIP
-    fi
-
-    return 1  # Not WIP
-}
-
-# Get WIP commits in range
-get_wip_commits() {
-    local from_ref="$1"
-    local to_ref="$2"
-
-    # Find commits with wip: in their message
-    git log --oneline --grep="^wip:\|^\[.*\] wip:" "$from_ref..$to_ref" 2>/dev/null
-}

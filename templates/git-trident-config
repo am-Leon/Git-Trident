@@ -115,11 +115,6 @@ CHANGELOG_QA_EXCLUDED_PREFIXES=""
 # Prefixes to exclude from RELEASE_NOTES.md (production).
 CHANGELOG_RELEASE_EXCLUDED_PREFIXES="wip|cmd"
 
-# [DEPRECATED / DISABLED] Changelog Webhook delivery is an incomplete feature
-# pending a full refactor. These keys are recognised but have no effect.
-# CHANGELOG_WEBHOOK_URL=""
-# CHANGELOG_WEBHOOK_AUTH=""
-# CHANGELOG_WEBHOOK_FORMAT="raw"
 
 # =============================================================================
 # EXAMPLE CONFIGURATIONS

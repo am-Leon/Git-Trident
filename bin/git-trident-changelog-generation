@@ -492,74 +492,10 @@ prepend_to_file() {
 # WEBHOOK DELIVERY
 # =============================================================================
 
-# POST QA_NOTES.md content to a configured webhook URL.
-# [DEPRECATED / DISABLED] This feature is disabled as it is incomplete and needs a refactor.
-deliver_webhook() {
-    local file_path="$1"
-    log_debug "  ⚠️  Webhook delivery is currently disabled/deprecated in Git Trident."
-    return 0
-
-#    local file_path="$1"
-#    local webhook_url="${CHANGELOG_WEBHOOK_URL:-}"
-#
-#    # Silent skip if not configured
-#    [ -z "$webhook_url" ] && return 0
-#
-#    if [ ! -f "$file_path" ]; then
-#        log_warn "  Webhook: file not found: $file_path"
-#        return 1
-#    fi
-#
-#    local content
-#    content=$(cat "$file_path")
-#    [ -z "$content" ] && return 0
-#
-#    local format="${CHANGELOG_WEBHOOK_FORMAT:-slack}"
-#    local auth_header="${CHANGELOG_WEBHOOK_AUTH:-}"
-#
-#    local curl_args=(-s -o /dev/null -w "%{http_code}" -X POST)
-#
-#    # Add auth header if provided
-#    if [ -n "$auth_header" ]; then
-#        curl_args+=(-H "Authorization: $auth_header")
-#    fi
-#
-#    case "$format" in
-#        "slack")
-#            # Slack/Discord format: {"text": "content"}
-#            local escaped
-#            escaped=$(python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' < "$file_path")
-#            curl_args+=(-H "Content-Type: application/json")
-#            curl_args+=(-d "{\"text\": $escaped}")
-#            ;;
-#        "json")
-#            # Generic JSON: {"content": "content"}
-#            local escaped
-#            escaped=$(python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' < "$file_path")
-#            curl_args+=(-H "Content-Type: application/json")
-#            curl_args+=(-d "{\"content\": $escaped}")
-#            ;;
-#        "raw")
-#            # Raw markdown POST
-#            curl_args+=(-H "Content-Type: text/markdown")
-#            curl_args+=(--data-binary "@$file_path")
-#            ;;
-#        *)
-#            log_warn "  Unknown webhook format: $format. Skipping delivery."
-#            return 1
-#            ;;
-#    esac
-#
-#    log_info "  📤 Delivering QA Notes via webhook..."
-#    local http_code
-#    http_code=$(curl "${curl_args[@]}" "$webhook_url" 2>/dev/null)
-#
-#    if [[ "$http_code" =~ ^2 ]]; then
-#        log_info "  📤 QA Notes delivered via webhook (HTTP $http_code)"
-#    else
-#        log_warn "  ⚠️  Webhook delivery failed (HTTP ${http_code:-000}). QA Notes saved locally."
-#    fi
-}
+# The webhook delivery feature was never completed. Its ~60-line implementation
+# sat commented out behind an unconditional `return 0`, and its config keys
+# (CHANGELOG_WEBHOOK_URL / _AUTH / _FORMAT) had no effect. Removed rather than
+# left as a false promise; recoverable from git history if revived.
 
 # =============================================================================
 # FILE WRITING
@@ -596,9 +532,6 @@ write_files() {
         local qa_path="${output_dir}/${QA_NOTES_FILENAME}"
         prepend_to_file "$qa_path" "$qa_section"
         log_info "  ✅ ${QA_NOTES_FILENAME} updated: $qa_path"
-
-        # Deliver via webhook if configured
-        deliver_webhook "$qa_path"
 
     elif [ "$environment" = "production" ]; then
         # --- RELEASE_NOTES.md (production, with release exclusions) ---

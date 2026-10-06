@@ -160,45 +160,6 @@ get_staging_tags_for_production_sync() {
     echo "$candidate_tags" | sed '/^$/d'
 }
 
-find_outdated_staging_tags() {
-    local production_version="$1"
-    local production_tag="${PRODUCTION_TAG_PREFIX}${production_version}"
-
-    log_debug "Finding staging tags outdated by production $production_version..."
-
-    # Get ALL staging tags that should receive production changes
-    local all_candidate_tags=$(get_staging_tags_for_production_sync "$production_version")
-
-    if [ -z "$all_candidate_tags" ]; then
-        echo ""  # Return empty string
-        return 0
-    fi
-
-    # Get only the LATEST RC for each base version
-    local latest_rcs=$(get_latest_rc_per_base_version "$all_candidate_tags")
-
-    if [ -z "$latest_rcs" ]; then
-        echo ""  # Return empty string
-        return 0
-    fi
-
-    # Find which latest RCs don't include production changes
-    local outdated_latest_tags=""
-    local production_commit=$(git rev-parse "$production_tag")
-
-    for staging_tag in $latest_rcs; do
-        # Check if this latest version includes the production changes
-        if ! git merge-base --is-ancestor "$production_commit" "$staging_tag" 2>/dev/null; then
-            outdated_latest_tags="${outdated_latest_tags}${staging_tag}"$'\n'
-            log_debug "Found outdated latest RC: $staging_tag"
-        else
-            log_debug "Latest RC is up-to-date: $staging_tag"
-        fi
-    done
-
-    echo "$outdated_latest_tags" | sed '/^$/d'
-}
-
 # =============================================================================
 # SINGLE VERSION PROCESSING (WITH PLATFORM SUPPORT)
 # =============================================================================
@@ -415,27 +376,6 @@ show_rebase_summary() {
     log_info "    1. Tag-X + production → Tag-X+1"
     log_info "    2. Tag-Y + Tag-X+1 → Tag-Y+1"
     log_empty ""
-}
-
-process_rebase_versions() {
-    local production_version="$1"
-    local production_commit="$2"
-    shift 2
-    local latest_rcs_to_rebase=("$@")
-
-    local rebased_count=0
-    local total_count=${#latest_rcs_to_rebase[@]}
-
-    # Process each base version's latest RC
-    for latest_rc_tag in "${latest_rcs_to_rebase[@]}"; do
-        if process_single_staging_version "$latest_rc_tag" "$production_version" "$production_commit"; then
-            rebased_count=$((rebased_count + 1))
-        fi
-        echo ""
-    done
-
-    # Use array approach: return space-separated values
-    echo "$rebased_count $total_count"
 }
 
 show_rebase_completion_summary() {

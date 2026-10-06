@@ -833,9 +833,6 @@ Commit Collection:
 Configuration Keys:
   CHANGELOG_QA_EXCLUDED_PREFIXES       Excluded from QA_NOTES (default: empty)
   CHANGELOG_RELEASE_EXCLUDED_PREFIXES  Excluded from RELEASE_NOTES (default: wip|cmd)
-  CHANGELOG_WEBHOOK_URL (DEPRECATED/DISABLED)                Webhook URL for QA_NOTES delivery (optional)
-  CHANGELOG_WEBHOOK_AUTH (DEPRECATED/DISABLED)               Webhook auth header (optional)
-  CHANGELOG_WEBHOOK_FORMAT (DEPRECATED/DISABLED)             Webhook format: slack|json|raw (default: slack)
 
 Examples:
 $(if [[ "${PLATFORM_SPECIFIC_TAGS:-false}" == "true" ]]; then

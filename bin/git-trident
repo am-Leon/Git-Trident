@@ -23,8 +23,21 @@ SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
 GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 # ----------------------------------------------------------------------------
 
-# Source common utilities - skip auto-init for utility commands
-if [[ "$1" =~ ^(help|--help|-h|version|config|hooks|uninstall)$ ]]; then
+# Does ANY argument ask for help? Help must never require a repository, a project
+# config, or network reachability — previously `git trident staging release --help`
+# failed with "❌ Not inside a Git repository", because only a handful of top-level
+# commands were whitelisted for --no-init and the staging/production namespaces
+# went through full config loading and pre-operation checks first.
+GT_WANTS_HELP=false
+for _arg in "$@"; do
+    case "$_arg" in
+        help|--help|-h) GT_WANTS_HELP=true; break ;;
+    esac
+done
+
+# Source common utilities - skip auto-init for help and for utility commands that
+# legitimately run outside a repository.
+if [[ "$GT_WANTS_HELP" == "true" ]] || [[ "${1:-}" =~ ^(help|--help|-h|version|config|hooks|uninstall)$ ]]; then
     source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
 else
     source "$SCRIPT_DIR/../lib/git-trident-common.sh"
@@ -618,7 +631,10 @@ dispatch_utility_command() {
 
 run_pre_operation_checks() {
     local namespace="$1"
-    
+
+    # Help short-circuits every precondition.
+    [[ "$GT_WANTS_HELP" == "true" ]] && return 0
+
     case "$namespace" in
         "production"|"staging"|"push-all"|"verify-sync"|"status"|"tags"|"cleanup")
             if ! pre_operation_checks "$namespace"; then
