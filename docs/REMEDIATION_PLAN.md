@@ -1099,8 +1099,8 @@ in the argv **before** config load and pre-operation checks, and short-circuit.
 | `sync-from-production.sh` | `process_rebase_versions`, `find_outdated_staging_tags`                                                                                               |
 
 Plus: `_write_line` (`config`), unused `rc_int` / `latest_version` / `rc_number`
-(`verify-sync:418, 469, 707, 710, 751, 754`), and the ~60-line commented-out webhook
-block (`changelog-generation:477–542`) together with its four config keys.
+(`verify-sync:418, 469, 707, 710, 751, 754`), and the ~60-line commented-out
+delivery block in `changelog-generation` together with its four config keys.
 
 **Caveat:** `acquire_lock`/`release_lock` are dead but **correct** — A7 revives them
 rather than deleting them. The `process_*_versions` pair duplicates logic that the main
@@ -1152,8 +1152,8 @@ Items **not** absorbed by Phase 3:
 ## 9. Task checklist
 
 ### Phase 0 — Safety net
-- [ ] **T0.1** `tests/lib/repo_fixture.sh` — isolated HOME, bare remote, separate stdout/stderr/exit assertions — **L**
-- [ ] **T0.2** Six integration suites (staging, production, hotfix, sync-tags, push-all, cwd) — **L**
+- [x] **T0.1** `tests/lib/repo_fixture.sh` — isolated HOME, real bare remote, stdin from /dev/null, per-commit files, and `assert_no_shell_errors` / `assert_tags_equal` / `assert_branch_contains` — **DONE**
+- [x] **T0.2** Six e2e suites, 126 assertions: staging, production+hotfix, sync-tags (both directions), push-all, cwd/worktree, multi-platform — **DONE**
 - [ ] **T0.3** `tests/test_shellcheck.sh`, `-S error` + **SC2154**, skip-if-absent — **S**
 - [x] **T0.4** `tests/test_bash32_compat.sh` — 15 checks: Bash 4+ constructs, `set -u`, CRLF, `.gitattributes`, git-index exec bits, shebangs — **DONE**
 - [x] **T0.5** `GT_TEST_BASH` → suite runs under the platform bash; warns when not 3.2 — **DONE**
@@ -1170,6 +1170,20 @@ Items **not** absorbed by Phase 3:
   `install.sh` chmods; running from a clone (the workflow CONTRIBUTING.md documents)
   failed with `Permission denied`. Windows cannot represent the bit in the filesystem,
   so the index is the only portable source of truth — now asserted by **T0.4** `bc_14`.
+
+
+### Landed out-of-plan (Phase 0, completed)
+
+- [x] **Changelog delivery removed completely** — code, config keys, comments, docs and
+  test fixtures. `git grep -i webhook` now returns nothing.
+- [x] **Two fixture properties learned from failures while writing the suites:**
+  `gt_fixture_run` redirects stdin from `/dev/null`, because `REQUIRE_CONFIRMATION=false`
+  silences `confirm_action` but NOT `force_confirm_action` — a test that hit a merge
+  conflict hung indefinitely instead of failing. And `gt_fixture_commit` writes to a
+  distinct file per commit, because appending everything to one file made independent
+  release lines conflict artificially.
+- [x] **All `tests/` files normalised to mode 100755 in the git index**, for the same
+  reason as `bin/` and `hooks/`: Windows cannot represent the bit in the filesystem.
 
 ### Phase 1 — P0
 - [x] **P0-1** Tag kept verbatim for the URL (HTTP 200, was 404); `is_version_greater` comparison prevents downgrades — **DONE**
@@ -1219,7 +1233,7 @@ Items **not** absorbed by Phase 3:
 - [x] **A9** `set -o pipefail` in all 11 entry points; `set -u` withdrawn (Bash 3.2) and blocked by T0.4 — **DONE**
 - [x] **A10** Platform summary table and brief-status lines moved to stderr — **DONE**
 - [x] **A11** Help detected across all argv before sourcing; 14 invocations verified outside a repository — **DONE**
-- [x] **A12** 20 dead functions + the webhook feature and its config keys removed (−461 lines) — **DONE**
+- [x] **A12** 20 dead functions + the abandoned changelog-delivery feature and its config keys removed (−461 lines) — **DONE**
 
 
 ### Landed out-of-plan (Phase 3)

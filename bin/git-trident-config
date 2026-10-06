@@ -243,7 +243,6 @@ CMD_MIN_WORD_COUNT=${cmd_words}
 # =============================================================================
 CHANGELOG_QA_EXCLUDED_PREFIXES="${qa_excl}"
 CHANGELOG_RELEASE_EXCLUDED_PREFIXES="${rel_excl}"
-# [DEPRECATED / DISABLED] Changelog webhook delivery is not a completed feature and needs a refactor.
 EOF
 
     log_empty ""
