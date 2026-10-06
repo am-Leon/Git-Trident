@@ -605,6 +605,10 @@ handle_doctor() {
     execute_script "git-trident-doctor" "$@"
 }
 
+handle_abort() {
+    execute_script "git-trident-abort" "$@"
+}
+
 handle_uninstall() {
     execute_script "git-trident-uninstall" "$@"
 }
@@ -652,6 +656,9 @@ dispatch_utility_command() {
         "doctor")
             handle_doctor "${args[@]}"
             ;;
+        "abort")
+            handle_abort "${args[@]}"
+            ;;
 
         "help"|"--help"|-h)
             show_main_help
@@ -678,6 +685,9 @@ run_pre_operation_checks() {
     [[ "$GT_WANTS_HELP" == "true" ]] && return 0
 
     case "$namespace" in
+        # 'abort' is deliberately absent: it exists to recover from a broken
+        # state, so requiring remote reachability first would block the very
+        # situation it is for.
         "production"|"staging"|"push-all"|"verify-sync"|"status"|"tags"|"cleanup")
             if ! pre_operation_checks "$namespace"; then
                 exit 1
@@ -724,7 +734,7 @@ main() {
         "uninstall")
             handle_uninstall "${remaining_args[@]}"
             ;;
-        "push-all"|"verify-sync"|"status"|"tags"|"version"|"help"|"cleanup"|"hooks"|"config"|"doctor")
+        "push-all"|"verify-sync"|"status"|"tags"|"version"|"help"|"cleanup"|"hooks"|"config"|"doctor"|"abort")
             dispatch_utility_command "$namespace" "${remaining_args[@]}"
             ;;
         *)

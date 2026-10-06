@@ -1137,13 +1137,13 @@ Items **not** absorbed by Phase 3:
 |-----|--------------------------------------------------------|--------------------------------------------------------------------------------------------------------|------|
 | E1  | `--json` on `status`, `verify-sync`, `tags`, `version` | Makes the tool scriptable; depends on **A10**                                                          | M    |
 | E2  | `--dry-run` on every mutating command                  | Only `sync-tags` has it today; the highest-risk commands (`release finish`, `hotfix finish`) have none | M    |
-| E3  | `git trident doctor`                                   | Consolidates `version health` + `verify-sync` + config validation into one diagnostic                  | S    |
-| E4  | `git trident abort`                                    | Unwind a partially-completed flow: abort merge, drop temp branches, delete the just-created tag        | M    |
-| E5  | Global `--yes` / `--non-interactive`                   | Today only `version update` has it; needed for any automation                                          | S    |
-| E6  | `--no-color` + `NO_COLOR` env support                  | `common.sh:91` only checks `[[ -t 1 ]]`                                                                | S    |
+| ~~E3~~ | `git trident doctor` | **DONE — five layers in dependency order; stops once an upstream layer is broken; also detects orphaned temp branches, a merge in progress, and stale locks** | S |
+| ~~E4~~ | `git trident abort` | **DONE — reports the exact state, then undoes only LOCAL, UNPUSHED refs; `--dry-run` reports and stops** | M |
+| ~~E5~~ | Global `--yes` / `--non-interactive` | **DONE — consumed by the dispatcher and exported so it survives `exec`; `force_confirm_action` deliberately NOT silenced** | S |
+| ~~E6~~ | `--no-color` + `NO_COLOR` env support | **DONE — `--no-color`, `NO_COLOR`, `GT_COLOR=never/always/auto`; decided by **stderr**, which is where logs actually go (it tested stdout before)** | S |
 | E7  | Bash/zsh completions                                   | Large command surface, deeply nested subcommands                                                       | M    |
-| E8  | `CONFIG_SCHEMA_VERSION` key                            | Enables safe config migrations; pairs with **A2**                                                      | S    |
-| E9  | `git trident config validate`                          | Validate without running an operation; reuses the A2 loader                                            | S    |
+| ~~E8~~ | `CONFIG_SCHEMA_VERSION` key | **DONE — in the template, with `CONFIG_SCHEMA_CURRENT`; reported by `config validate` and `doctor`** | S |
+| ~~E9~~ | `git trident config validate` | **DONE — required keys, branch existence, remote, platform classification, schema version; loads through the real loader** | S |
 | E10 | `git trident config migrate`                           | Rewrite configs when keys are renamed/moved between tiers                                              | M    |
 | E11 | Structured progress for long syncs                     | `sync-tags` across many versions gives no overall progress indication                                  | S    |
 

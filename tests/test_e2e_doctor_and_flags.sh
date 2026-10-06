@@ -119,5 +119,67 @@ gt_fixture_commit "feat: Prepare the first release"
 assert_success "$?" "release finish --yes completes without a prompt"
 assert_tag_exists "staging/1.0.0-rc-01" "Tag created under --yes"
 
+# ===========================================================================
+# DF_09 — abort: nothing in progress
+# ===========================================================================
+start_test_case "df_09_abort_clean_repo"
+gt_fixture_destroy
+gt_fixture_new_repo abort || exit 1
+gt_fixture_run abort
+assert_success "$GT_RUN_STATUS" "abort exits 0 on a clean repository"
+assert_no_shell_errors "abort produces no shell errors"
+assert_contains "$(gt_run_output)" "Nothing to abort" "Says there is nothing to undo"
+
+# ===========================================================================
+# DF_10 — abort --dry-run reports but changes nothing
+# ===========================================================================
+start_test_case "df_10_abort_dry_run_is_read_only"
+gt_fixture_run staging release start 1.0.0 >/dev/null 2>&1
+gt_fixture_commit "feat: Prepare the release"
+gt_fixture_tag "staging/1.0.0-rc-01"
+git branch temp-rebase-orphan >/dev/null 2>&1
+
+before_tags="$(git tag -l | sort | tr '\n' ' ')"
+before_branch="$(git branch --show-current)"
+gt_fixture_run abort --dry-run
+assert_success "$GT_RUN_STATUS" "abort --dry-run exits 0"
+assert_contains "$(gt_run_output)" "Dry run" "Announces it changed nothing"
+assert_equals "$(git tag -l | sort | tr '\n' ' ')" "$before_tags" "Dry run deleted no tags"
+assert_equals "$(git branch --show-current)" "$before_branch" "Dry run changed no branch"
+
+# ===========================================================================
+# DF_11 — abort undoes local-only state
+# ===========================================================================
+start_test_case "df_11_abort_undoes_local_state"
+gt_fixture_run abort
+assert_success "$GT_RUN_STATUS" "abort exits 0"
+assert_tag_absent "staging/1.0.0-rc-01" "Local-only tag removed"
+git show-ref --verify --quiet "refs/heads/release/stg/1.0.0"
+assert_failure "$?" "Release branch removed"
+git show-ref --verify --quiet "refs/heads/temp-rebase-orphan"
+assert_failure "$?" "Orphaned sync branch removed"
+
+# ===========================================================================
+# DF_12 — abort NEVER deletes anything already on the remote
+# ===========================================================================
+# The whole point of the safety rule: once a ref is pushed, other people may
+# have it, so removing it is a team decision rather than a command.
+start_test_case "df_12_abort_never_touches_pushed_refs"
+gt_fixture_destroy
+gt_fixture_new_repo abort-pushed || exit 1
+
+gt_fixture_run staging release start 1.0.0 >/dev/null 2>&1
+gt_fixture_commit "feat: Prepare the release"
+gt_fixture_tag "staging/1.0.0-rc-01"
+git push -q origin "release/stg/1.0.0" "staging/1.0.0-rc-01" >/dev/null 2>&1
+
+gt_fixture_run abort
+assert_contains "$(gt_run_output)" "will NOT be deleted" "States that pushed refs are left alone"
+assert_tag_exists "staging/1.0.0-rc-01" "Pushed tag still exists locally"
+git show-ref --verify --quiet "refs/heads/release/stg/1.0.0"
+assert_success "$?" "Pushed branch still exists locally"
+remote_refs=$(git ls-remote origin "refs/heads/release/stg/1.0.0" 2>/dev/null | grep -c .)
+assert_equals "$remote_refs" "1" "Remote branch untouched"
+
 gt_fixture_destroy
 print_summary

@@ -172,6 +172,7 @@ and `staging`.
 |                | `git trident production hotfix finish`                                   | Finish production hotfix and sync changes back                 |
 |                | `git trident production changelog [version]`                             | Generate public release notes                                  |
 | **Utility**    | `git trident doctor`                              | Diagnose environment, installation, configuration and repository |
+|                | `git trident abort [--dry-run]`                   | Unwind a partially-completed release or hotfix (local refs only) |
 |                | `git trident status`                                                     | Check sync status, branch differences, and environment tags    |
 |                | `git trident verify-sync`                                                | In-depth verification of branches/tags sync                    |
 |                | `git trident push-all [remote]`                                          | Push all local staging/production/develop updates & tags       |

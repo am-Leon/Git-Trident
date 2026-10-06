@@ -65,6 +65,7 @@ Core Workflow Commands:
 Utility Commands:
   config [init|show|validate]    Manage, view and validate configuration
   doctor                         Diagnose environment, install, config and repo
+  abort [--dry-run]              Unwind a partially-completed release or hotfix
   push-all [remote]              Push all changes to remote
   verify-sync [--brief]          Verify branch synchronization
   cleanup [command]              Cleanup/Pruning for old staging tags & branches
