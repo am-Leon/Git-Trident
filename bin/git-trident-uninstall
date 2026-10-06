@@ -5,6 +5,11 @@
 #   or:  ~/.git-trident/bin/git-trident-uninstall [--force]
 # =============================================================================
 
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See docs/REMEDIATION_PLAN.md A9.
+set -o pipefail
+
 # --- Git Trident entry-point preamble (A1a) ---------------------------------
 # Resolve this script's REAL location, following symlinks, so the tool works
 # when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)

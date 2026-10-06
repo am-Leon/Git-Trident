@@ -2,6 +2,11 @@
 # Push all local changes to remote after manual review - Multi-platform support with classification
 # Optimized with enhanced platform propagation analysis and safety checks
 
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See docs/REMEDIATION_PLAN.md A9.
+set -o pipefail
+
 # --- Git Trident entry-point preamble (A1a) ---------------------------------
 # Resolve this script's REAL location, following symlinks, so the tool works
 # when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)
@@ -845,16 +850,31 @@ push_branch() {
     local remote="${2:-$REMOTE}"
 
     log_step "Pushing $branch to $remote..."
-    if git push "$remote" "$branch" 2>&1 | tee /dev/stderr | grep -q "Everything up-to-date"; then
-        log_info "✅ $branch already up to date"
-        return 0
-    elif git push "$remote" "$branch"; then
-        log_info "✓ $branch pushed successfully"
-        return 0
-    else
+
+    # Push ONCE and inspect git's own exit status.
+    #
+    # The previous form ran `git push ... | tee /dev/stderr | grep -q` in the
+    # `if`, which (a) actually performed the push inside the test, (b) yielded
+    # grep's exit status rather than git's, and (c) pushed a SECOND time in the
+    # elif whenever the output did not say "Everything up-to-date".
+    local output rc
+    output=$(git push "$remote" "$branch" 2>&1)
+    rc=$?
+
+    if [ $rc -ne 0 ]; then
         log_error "Failed to push $branch"
+        while IFS= read -r _line; do
+            [ -n "$_line" ] && log_empty "   $_line"
+        done <<< "$output"
         return 1
     fi
+
+    if printf '%s' "$output" | grep -q "Everything up-to-date"; then
+        log_info "✅ $branch already up to date"
+    else
+        log_info "✓ $branch pushed successfully"
+    fi
+    return 0
 }
 
 push_tags() {

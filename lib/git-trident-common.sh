@@ -47,6 +47,7 @@ OPTIONAL_CONFIG_VARS=(
     "REQUIRE_CLEAN_WORKING_TREE=true"
     "VALIDATE_REMOTE_CONNECTIVITY=true"
     "CONFIG_VALIDATION_MODE=strict"
+    "CONFIG_PARSER=strict"
     # Multi-platform configuration
     "PLATFORM_SPECIFIC_TAGS=false"
     "PLATFORMS="
@@ -87,6 +88,7 @@ GLOBAL_ONLY_CONFIG_KEYS=(
     "VALIDATE_REMOTE_CONNECTIVITY"
     "REMOTE_TAG_CACHE_DURATION"
     "CONFIG_VALIDATION_MODE"
+    "CONFIG_PARSER"
     "DEBUG"
     "HOOKS_ENABLED"
     "GIT_TRIDENT_SKIP_HOOKS"
@@ -122,7 +124,103 @@ log_debug() { [[ "${DEBUG:-false}" == "true" ]] && echo -e "${BLUE}[DEBUG]${NC} 
 # _source_config_file  — internal helper
 # Sources a shell config file and returns 0 on success.
 # ---------------------------------------------------------------------------
-_source_config_file() {
+# Is this a key Git Trident recognises?
+gt_config_key_is_known() {
+    local key="$1" entry
+    for entry in "${REQUIRED_CONFIG_VARS[@]}"; do
+        [[ "$entry" == "$key" ]] && return 0
+    done
+    for entry in "${OPTIONAL_CONFIG_VARS[@]}"; do
+        [[ "${entry%%=*}" == "$key" ]] && return 0
+    done
+    return 1
+}
+
+gt_config_key_is_global_only() {
+    local key="$1" entry
+    for entry in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+        [[ "$entry" == "$key" ]] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _parse_config_file  — strict KEY=VALUE reader (CONFIG_PARSER=strict)
+# ---------------------------------------------------------------------------
+# Reads a config file WITHOUT executing it.
+#
+# The alternative, `set -a; source "$file"; set +a`, has two real problems:
+#
+#   1. git-trident-config is COMMITTED to the repository, so cloning a project
+#      and running any Git Trident command executes whatever that file contains.
+#      For a tool designed to be shared across a team, that is a hole.
+#   2. `set -a` exports every assignment. That is how CONFIG_LOADED=true leaked
+#      into child processes and made them skip validation, and it lets a stray
+#      variable in the user's shell silently override project settings.
+#
+# It also removes the need for the snapshot/restore workaround around
+# GLOBAL_ONLY_CONFIG_KEYS: a global-only key found in a project file is simply
+# never read, instead of being read and then undone with eval.
+#
+# Arguments: <file> <scope: global|project>
+_parse_config_file() {
+    local config_file="$1" scope="$2"
+    local line key val
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip blanks and comments
+        case "$line" in
+            ''|'#'*) continue ;;
+        esac
+        # Accept:  KEY=value  /  export KEY=value  (leading whitespace allowed)
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue
+
+        key="${BASH_REMATCH[2]}"
+        val="${BASH_REMATCH[3]}"
+
+        # Trim leading whitespace
+        val="${val#"${val%%[![:space:]]*}"}"
+
+        # A quoted value runs to its closing quote; anything after it (such as
+        # an inline comment) is discarded. An unquoted value ends at the first
+        # whitespace-then-# sequence. Handling quotes FIRST matters: a value
+        # like  "-rc-"   # comment  starts with a quote but does not end with
+        # one, so a naive "is it quoted?" test leaves the comment attached.
+        case "$val" in
+            \"*) val="${val#\"}"; val="${val%%\"*}" ;;
+            \'*) val="${val#\'}"; val="${val%%\'*}" ;;
+            *)
+                case "$val" in
+                    *[[:space:]]#*) val="${val%%[[:space:]]#*}" ;;
+                esac
+                # Trim trailing whitespace
+                val="${val%"${val##*[![:space:]]}"}"
+                ;;
+        esac
+
+        if ! gt_config_key_is_known "$key"; then
+            log_warn "Unknown configuration key ignored: $key ($config_file)"
+            continue
+        fi
+
+        if [[ "$scope" == "project" ]] && gt_config_key_is_global_only "$key"; then
+            # Warned about separately by _warn_global_only_keys_in_project_config
+            log_debug "Ignoring global-only key in project config: $key"
+            continue
+        fi
+
+        printf -v "$key" '%s' "$val"
+    done < "$config_file"
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _source_config_file — legacy loader (CONFIG_PARSER=legacy)
+# ---------------------------------------------------------------------------
+# Kept for one minor version so projects using shell expressions inside their
+# config have a migration path. Set CONFIG_PARSER=legacy to opt back in.
+_source_config_file_legacy() {
     local config_file="$1"
     set -a
     # shellcheck source=/dev/null
@@ -130,6 +228,16 @@ _source_config_file() {
     local status=$?
     set +a
     return $status
+}
+
+# Dispatcher used by load_project_config.
+_source_config_file() {
+    local config_file="$1" scope="${2:-project}"
+    if [[ "${CONFIG_PARSER:-strict}" == "legacy" ]]; then
+        _source_config_file_legacy "$config_file"
+    else
+        _parse_config_file "$config_file" "$scope"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -197,7 +305,7 @@ load_project_config() {
     local global_loaded=false
     if [[ -f "$global_config" ]]; then
         log_debug "Loading global configuration from: $global_config"
-        if _source_config_file "$global_config"; then
+        if _source_config_file "$global_config" "global"; then
             global_loaded=true
             log_debug "✓ Global configuration loaded: $global_config"
         else
@@ -207,11 +315,21 @@ load_project_config() {
         log_debug "Global config not found: $global_config"
     fi
 
-    # Snapshot global-only values so we can restore them after the project
-    # file is sourced (project file must not override these).
-    for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
-        eval "local _global_snapshot_$_key=\"\${!_key:-}\""
-    done
+    # NOTE: the strict parser never reads a global-only key out of a project
+    # file, so there is nothing to undo afterwards. This used to snapshot every
+    # global-only value into dynamically-named locals via eval, source the
+    # project file, then eval them back — a workaround that only existed because
+    # `source` could not be told which keys to ignore.
+    #
+    # Under CONFIG_PARSER=legacy the project file is still sourced wholesale, so
+    # the restore below is kept for that path only.
+    local _using_legacy_parser=false
+    if [[ "${CONFIG_PARSER:-strict}" == "legacy" ]]; then
+        _using_legacy_parser=true
+        for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+            eval "local _global_snapshot_$_key=\"\${!_key:-}\""
+        done
+    fi
 
     # ------------------------------------------------------------------
     # Step 2 — Overlay the project config (if present)
@@ -231,7 +349,7 @@ load_project_config() {
         # Warn if project file contains global-only keys
         _warn_global_only_keys_in_project_config "$project_file"
 
-        if _source_config_file "$project_file"; then
+        if _source_config_file "$project_file" "project"; then
             project_loaded=true
             log_debug "✓ Project configuration loaded: $project_file"
         else
@@ -239,14 +357,17 @@ load_project_config() {
             return 1
         fi
 
-        # Restore global-only values so project file cannot override them
-        for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
-            eval "local _global_val=\"\${_global_snapshot_$_key:-}\""
-            if [[ -n "$_global_val" ]]; then
-                export "$_key"="$_global_val"
-                log_debug "Restored global-only key: $_key=${_global_val}"
-            fi
-        done
+        # Legacy path only: `source` cannot be told which keys to skip, so the
+        # global-only values are put back after the fact.
+        if [[ "$_using_legacy_parser" == "true" ]]; then
+            for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+                eval "local _global_val=\"\${_global_snapshot_$_key:-}\""
+                if [[ -n "$_global_val" ]]; then
+                    export "$_key"="$_global_val"
+                    log_debug "Restored global-only key: $_key=${_global_val}"
+                fi
+            done
+        fi
     fi
 
     # ------------------------------------------------------------------
@@ -679,6 +800,49 @@ assert_clean_working_tree() {
 }
 
 # =============================================================================
+# GIT COMMAND WRAPPER
+# =============================================================================
+
+# Run a git command, capture BOTH streams, and surface the error when it fails.
+#
+# The codebase had ~160 sites sending git's stderr to /dev/null. For read-only
+# probes (`rev-parse`, `show-ref`) that is a legitimate existence test, but for
+# mutating commands it meant real failures were invisible or — worse —
+# misattributed. interactive_merge reported "merge conflict" for an invalid
+# strategy flag, and `cleanup prune` reported success while deleting nothing.
+#
+# Output is echoed on stdout so callers can inspect it; the exit status is git's.
+#
+# Usage:
+#   output=$(gt_git tag -a "$name" "$ref" -m "$msg") || { log_error "$output"; return 1; }
+gt_git() {
+    local output rc
+    output=$(git "$@" 2>&1)
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        log_debug "git $* -> exit $rc: $output"
+    fi
+    printf '%s' "$output"
+    return $rc
+}
+
+# Run a git command and, on failure, log the error with a caller-supplied
+# context line. Returns git's exit status.
+gt_git_checked() {
+    local context="$1"; shift
+    local output rc
+    output=$(git "$@" 2>&1)
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        log_error "$context"
+        while IFS= read -r _gt_line; do
+            [ -n "$_gt_line" ] && log_empty "   $_gt_line"
+        done <<< "$output"
+    fi
+    return $rc
+}
+
+# =============================================================================
 # GIT LOG UTILITIES
 # =============================================================================
 
@@ -1066,13 +1230,24 @@ verify_step() {
     local success_message="$3"
 
     log_step "$step_name..."
-    if eval "$command" >/dev/null 2>&1; then
+
+    # Capture the output instead of discarding it. Every checkout, tag and
+    # branch creation in the release flows goes through here, and a bare
+    # "✗ Failed: Creating staging tag" with no reason is close to useless.
+    local output rc
+    output=$(eval "$command" 2>&1)
+    rc=$?
+
+    if [ $rc -eq 0 ]; then
         log_info "✓ $success_message"
         return 0
-    else
-        log_error "✗ Failed: $step_name"
-        return 1
     fi
+
+    log_error "✗ Failed: $step_name"
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && log_empty "   $_line"
+    done <<< "$output"
+    return 1
 }
 
 # =============================================================================
