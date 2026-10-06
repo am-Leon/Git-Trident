@@ -25,6 +25,11 @@ while [ -L "$GT_SELF" ]; do
     case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# GT_INSTALL_ROOT is part of the shared entry-point contract: every script sets
+# it, and git-trident-hooks (discover_install_dir) and git-trident-version
+# (passing the install root to the updater) read it. Scripts that do not read it
+# still define it so the preamble stays identical everywhere.
+# shellcheck disable=SC2034
 GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 # ----------------------------------------------------------------------------
 
@@ -477,8 +482,6 @@ has_deprecated_tags_for_platform() {
     fi
 
     # Get the latest production tag for this platform
-    local latest_production_tag=$(echo "$production_tags" | sort -V -r | head -1)
-    local latest_version=$(echo "$latest_production_tag" | sed "s|^${PRODUCTION_TAG_PREFIX}||")
 
     # Check if any staging tags exist for versions that are already in production
     local staging_tags=$(get_all_staging_tags "$platform")
@@ -529,8 +532,6 @@ has_deprecated_tags_legacy() {
     fi
 
     # Get the latest production tag
-    local latest_production_tag=$(echo "$production_tags" | sort -V -r | head -1)
-    local latest_version=$(echo "$latest_production_tag" | sed "s|^${PRODUCTION_TAG_PREFIX}||")
 
     # Check if any staging tags exist for versions that are already in production
     local staging_tags=$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)
@@ -768,10 +769,8 @@ check_merge_chain_for_platform() {
     for tag in $staging_tags; do
         local version=$(echo "$tag" | sed "s|^${STAGING_TAG_PREFIX}||")
         local base_version=$(extract_base_version "$version")
-        local rc_number=$(extract_rc_number "$version")
 
         # Convert RC number to integer for comparison
-        local rc_int=$(echo "$rc_number" | sed 's/^0*//')
 
         if [ -n "$previous_tag" ] && [ "$current_base_version" = "$base_version" ]; then
             # Check if this RC includes the previous RC
@@ -812,10 +811,8 @@ check_merge_chain_legacy() {
     for tag in $staging_tags; do
         local version=$(echo "$tag" | sed "s|^${STAGING_TAG_PREFIX}||")
         local base_version=$(extract_base_version "$version")
-        local rc_number=$(extract_rc_number "$version")
 
         # Convert RC number to integer for comparison
-        local rc_int=$(echo "$rc_number" | sed 's/^0*//')
 
         if [ -n "$previous_tag" ] && [ "$current_base_version" = "$base_version" ]; then
             # Check if this RC includes the previous RC

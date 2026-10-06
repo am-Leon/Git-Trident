@@ -221,7 +221,6 @@ detect_active_profile() {
 show_post_install_instructions() {
     local profile=$1
     local global_config="$HOME/.git-trident-config"
-    local project_template="$INSTALL_DIR/templates/git-trident-config"
 
     log_empty
     log_info "🎉 GIT TRIDENT INSTALLATION COMPLETE!"
@@ -249,7 +248,9 @@ show_post_install_instructions() {
 # =============================================================================
 
 exit_handler() {
+    # Capture the status FIRST: every command below overwrites $?.
     local exit_code=$?
+
     # Clean up temp folder if it exists
     if [[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]]; then
         rm -rf "$TEMP_DIR"
@@ -259,6 +260,15 @@ exit_handler() {
         log_error "Installation failed. Cleaning up..."
         [[ -d "$INSTALL_DIR" ]] && rm -rf -- "$INSTALL_DIR"
     fi
+
+    # Exit explicitly with the captured status.
+    #
+    # This is not a behaviour fix: bash already preserves the status that
+    # triggered an EXIT trap unless the handler exits itself, and a failed
+    # install exited 1 both before and after this change (verified). It makes
+    # the contract explicit instead of implicit, and gives exit_code — which was
+    # captured and then never used — an actual purpose.
+    exit "$exit_code"
 }
 trap exit_handler EXIT INT TERM
 

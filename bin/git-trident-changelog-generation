@@ -37,6 +37,11 @@ while [ -L "$GT_SELF" ]; do
     case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# GT_INSTALL_ROOT is part of the shared entry-point contract: every script sets
+# it, and git-trident-hooks (discover_install_dir) and git-trident-version
+# (passing the install root to the updater) read it. Scripts that do not read it
+# still define it so the preamble stays identical everywhere.
+# shellcheck disable=SC2034
 GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 # ----------------------------------------------------------------------------
 

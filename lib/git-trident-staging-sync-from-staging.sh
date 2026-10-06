@@ -280,7 +280,6 @@ show_propagation_summary() {
         local tag_platform_info=""
         if is_platform_specific_mode; then
             local tag_version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
-            local tag_platform=$(extract_platform_from_version "$tag_version")
             local tag_platform_type=$(get_platform_type_from_version "$tag_version")
             tag_platform_info=" ($tag_platform_type)"
         fi
@@ -508,7 +507,6 @@ show_detection_results() {
             local tag_platform_info=""
             if is_platform_specific_mode; then
                 local tag_version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
-                local tag_platform=$(extract_platform_from_version "$tag_version")
                 local tag_platform_type=$(get_platform_type_from_version "$tag_version")
                 tag_platform_info=" ($tag_platform_type)"
             fi

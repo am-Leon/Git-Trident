@@ -470,9 +470,11 @@ extract_version_from_tag() {
 # =============================================================================
 
 # Validate staging tag is promotable to production
+# $2 (the target production version) is accepted for call-site symmetry with the
+# other validate_* helpers but is not used: promotability is determined entirely
+# by the staging tag's own lineage.
 validate_staging_tag_promotable() {
     local staging_tag="$1"
-    local production_version="$2"
 
     log_info "🔍 Validating staging tag: $staging_tag"
 
@@ -583,17 +585,16 @@ get_platform_type_from_version() {
         return 1
     fi
 
-    # Check if platform is common
-    if [[ " $COMMON_PLATFORMS " =~ " $platform " ]]; then
-        echo "common"
-        return 0
-    fi
+    # Whole-word membership on a space-separated list. See the note in
+    # git-trident-common.sh: a quoted right-hand side of =~ matches literally,
+    # which reads as a regex match and is flagged by SC2076.
+    case " $COMMON_PLATFORMS " in
+        *" $platform "*) echo "common"; return 0 ;;
+    esac
 
-    # Check if platform is independent
-    if [[ " $INDEPENDENT_PLATFORMS " =~ " $platform " ]]; then
-        echo "independent"
-        return 0
-    fi
+    case " $INDEPENDENT_PLATFORMS " in
+        *" $platform "*) echo "independent"; return 0 ;;
+    esac
 
     echo "unknown"
     return 1

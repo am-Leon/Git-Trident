@@ -20,7 +20,6 @@ setup_test_repo() {
     repo_dir=$(mktemp -d)
 
     # Save current dir
-    local original_dir="$PWD"
 
     cd "$repo_dir" || return 1
     git init -q

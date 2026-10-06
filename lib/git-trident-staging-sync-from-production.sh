@@ -328,10 +328,13 @@ process_single_staging_version() {
 show_rebase_summary() {
     local production_version="$1"
     shift
-    local latest_rcs_to_rebase=("$@")
+    # Renamed from latest_rcs_to_rebase: rebase_staging_releases uses that
+    # name for a STRING, and the same identifier holding two types in one file is
+    # confusing to read and to analyse (SC2178/SC2128).
+    local rcs_to_rebase=("$@")
 
     log_info "🔄 Staging releases that need rebase (latest RC per base version only):"
-    for tag in "${latest_rcs_to_rebase[@]}"; do
+    for tag in ${rcs_to_rebase[@]+"${rcs_to_rebase[@]}"}; do
         local platform_info=""
         if is_platform_specific_mode; then
             local version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
@@ -363,7 +366,7 @@ show_rebase_summary() {
 
     # Extract base versions from tags
     local base_versions_list=""
-    for tag in "${latest_rcs_to_rebase[@]}"; do
+    for tag in ${rcs_to_rebase[@]+"${rcs_to_rebase[@]}"}; do
         local base_version=$(extract_base_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
         base_versions_list="$base_versions_list$base_version "
     done

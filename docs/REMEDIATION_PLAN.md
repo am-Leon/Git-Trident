@@ -1154,7 +1154,7 @@ Items **not** absorbed by Phase 3:
 ### Phase 0 — Safety net
 - [x] **T0.1** `tests/lib/repo_fixture.sh` — isolated HOME, real bare remote, stdin from /dev/null, per-commit files, and `assert_no_shell_errors` / `assert_tags_equal` / `assert_branch_contains` — **DONE**
 - [x] **T0.2** Six e2e suites, 126 assertions: staging, production+hotfix, sync-tags (both directions), push-all, cwd/worktree, multi-platform — **DONE**
-- [ ] **T0.3** `tests/test_shellcheck.sh`, `-S error` + **SC2154**, skip-if-absent — **S**
+- [x] **T0.3** `tests/test_shellcheck.sh` — 5 checks (errors, SC2154, quoting/array-splitting, correctness codes in shipped code, SC2155 ratchet); skips cleanly when shellcheck is absent — **DONE**
 - [x] **T0.4** `tests/test_bash32_compat.sh` — 15 checks: Bash 4+ constructs, `set -u`, CRLF, `.gitattributes`, git-index exec bits, shebangs — **DONE**
 - [x] **T0.5** `GT_TEST_BASH` → suite runs under the platform bash; warns when not 3.2 — **DONE**
 - [ ] **T0.6** Correct CONTRIBUTING.md: floor is Bash 3.2, no brew required — **S**
@@ -1184,6 +1184,23 @@ Items **not** absorbed by Phase 3:
   release lines conflict artificially.
 - [x] **All `tests/` files normalised to mode 100755 in the git index**, for the same
   reason as `bin/` and `hooks/`: Windows cannot represent the bit in the filesystem.
+
+
+### Landed out-of-plan (T0.3)
+
+- [x] **Shipped code is clean for every code the gate enforces** — SC2154, SC2086, SC2206,
+  SC2068, SC2076, SC2128, SC2178, SC2034 and SC2319 are all zero across `bin/`, `lib/`,
+  `hooks/`, `scripts/`, `install.sh` and `build.sh`.
+- [x] **SC2076 converted to `case`** — four platform-membership tests used
+  `[[ " $LIST " =~ " $x " ]]`, where quoting the right-hand side makes bash match
+  LITERALLY rather than as a regex. That happened to be the intent, but it reads as a
+  regex match. `case` states it plainly, is POSIX, and behaves identically (verified
+  across exact, empty, partial and boundary-spanning inputs).
+- [x] **13 dead variables removed**, in two passes: removing the first set exposed four
+  more whose only consumers were the ones just deleted.
+- [x] **`install.sh` exit handler** now exits explicitly with the captured status. This is
+  *not* a behaviour fix — bash already preserves the triggering status through an EXIT
+  trap — but it makes the contract explicit and gives `exit_code` a purpose.
 
 ### Phase 1 — P0
 - [x] **P0-1** Tag kept verbatim for the URL (HTTP 200, was 404); `is_version_greater` comparison prevents downgrades — **DONE**

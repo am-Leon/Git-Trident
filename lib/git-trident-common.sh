@@ -689,8 +689,17 @@ is_common_platform() {
         return 1
     fi
 
-    # Use regex pattern to check if platform is in COMMON_PLATFORMS
-    [[ " $COMMON_PLATFORMS " =~ " $platform " ]]
+    # Whole-word membership test on a space-separated list.
+    #
+    # This was `[[ " $LIST " =~ " $platform " ]]`. Quoting the right-hand side of
+    # =~ makes bash match LITERALLY rather than as a regex, which happened to be
+    # the intent — but it reads as a regex match, and shellcheck flags it (SC2076)
+    # precisely because that discrepancy is usually a bug. `case` says what is
+    # meant, is POSIX, and behaves identically.
+    case " $COMMON_PLATFORMS " in
+        *" $platform "*) return 0 ;;
+    esac
+    return 1
 }
 
 # Check if a platform is independent
@@ -702,8 +711,17 @@ is_independent_platform() {
         return 1
     fi
 
-    # Use regex pattern to check if platform is in INDEPENDENT_PLATFORMS
-    [[ " $INDEPENDENT_PLATFORMS " =~ " $platform " ]]
+    # Whole-word membership test on a space-separated list.
+    #
+    # This was `[[ " $LIST " =~ " $platform " ]]`. Quoting the right-hand side of
+    # =~ makes bash match LITERALLY rather than as a regex, which happened to be
+    # the intent — but it reads as a regex match, and shellcheck flags it (SC2076)
+    # precisely because that discrepancy is usually a bug. `case` says what is
+    # meant, is POSIX, and behaves identically.
+    case " $INDEPENDENT_PLATFORMS " in
+        *" $platform "*) return 0 ;;
+    esac
+    return 1
 }
 
 # Get platform type (common or independent)

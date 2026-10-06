@@ -16,6 +16,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${GIT_TRIDENT_HOOKS_LOADED:-}" ]]; then
     GIT_TRIDENT_HOOKS_LOADED=true
     # GIT_TRIDENT_HOOK_MODE=true prevents git-trident-common.sh from calling exit 1 at source time
+    # Read by git-trident-common.sh at source time to suppress its auto-init.
+    # Static analysis cannot follow that across the source boundary, hence the
+    # directive below. (A comment line beginning "# shellcheck " is itself
+    # parsed as a directive, so that phrasing is avoided in prose.)
+    # shellcheck disable=SC2034
     GIT_TRIDENT_HOOK_MODE=true
     source "$SCRIPT_DIR/git-trident-common.sh"
 

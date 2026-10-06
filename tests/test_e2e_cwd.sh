@@ -20,11 +20,21 @@ gt_fixture_new_repo cwd || exit 1
 mkdir -p "$GT_FIXTURE_REPO/modules/app/src"
 cd "$GT_FIXTURE_REPO/modules/app/src" || exit 1
 
-for cmd in "status" "verify-sync --brief" "tags staging" "version config"; do
-    gt_fixture_run $cmd
+# Each invocation is spelled out rather than looped over a string that relies on
+# word splitting. Splitting works in bash but is invisible intent, and the same
+# construct silently does NOT split in zsh — which produced a confusing false
+# result while this work was being done.
+check_from_subdir() {
+    local label="$*"
+    gt_fixture_run "$@"
     assert_not_contains "$(gt_run_output)" "No project configuration file found" \
-        "git trident $cmd works three levels below the root"
-done
+        "git trident $label works three levels below the root"
+}
+
+check_from_subdir status
+check_from_subdir verify-sync --brief
+check_from_subdir tags staging
+check_from_subdir version config
 
 start_test_case "ec_02_full_release_from_a_subdirectory"
 gt_fixture_run staging release start 1.0.0
