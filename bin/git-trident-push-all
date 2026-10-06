@@ -669,7 +669,7 @@ show_push_summary() {
     # Tag analysis
     log_info "🏷️  TAG ANALYSIS:"
     local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
-    local tag_count=$(echo "$unpushed_tags" | wc -l | tr -d ' ')
+    local tag_count=$(count_lines "$unpushed_tags")
 
     if [ "$tag_count" -gt 0 ]; then
         log_info "  📦 Tags: $tag_count new tag(s)"
@@ -840,9 +840,16 @@ push_tags() {
 
     # Get tags to push
     local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
-    local tag_count=$(echo "$unpushed_tags" | wc -l | tr -d ' ')
+    local tag_count=$(count_lines "$unpushed_tags")
 
     if [ "$tag_count" -eq 0 ]; then
+        log_info "✅ No tags to push"
+        return 0
+    fi
+
+    # Guard: `while read <<< ""` still performs ONE iteration with an empty
+    # value, which would attempt `git push <remote> ""`.
+    if [ -z "$unpushed_tags" ]; then
         log_info "✅ No tags to push"
         return 0
     fi
@@ -955,7 +962,7 @@ perform_push_operations() {
     fi
 
     # Push tags
-    local tag_count=$(get_unpushed_tags "$remote" "$platform_filter" | wc -l | tr -d ' ')
+    local tag_count=$(count_lines "$(get_unpushed_tags "$remote" "$platform_filter")")
 
     if [ "$tag_count" -gt 0 ]; then
         log_info "Pushing $tag_count tag(s)..."

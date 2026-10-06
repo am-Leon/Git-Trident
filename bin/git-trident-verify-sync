@@ -31,12 +31,29 @@ source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
 # ARGUMENT PARSING
 # =============================================================================
 
+# Sets GT_ARG_* globals. Does NOT echo a result.
+#
+# This used to end with:
+#     echo "$mode $generate_report $show_deprecated $platform_filter $environment"
+# and the caller split it with `read`. When an optional middle field was empty
+# the double space collapsed under the default IFS, every later field shifted
+# left, and `--env develop` silently became `platform_filter=develop` with no
+# environment set — so the flag was discarded without any error.
+#
+# Echoing also meant `exit 1` below ran inside a command substitution, killing
+# only the subshell while the caller carried on with empty values.
 parse_arguments() {
-    local mode="comprehensive"  # Default: comprehensive verification
+    GT_ARG_MODE="comprehensive"   # Default: comprehensive verification
+    GT_ARG_REPORT=false
+    GT_ARG_DEPRECATED=false
+    GT_ARG_PLATFORM=""
+    GT_ARG_ENV=""                 # Will be validated against config
+
+    local mode="comprehensive"
     local generate_report=false
     local show_deprecated=false
     local platform_filter=""
-    local environment=""  # Will be validated against config
+    local environment=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -114,7 +131,12 @@ parse_arguments() {
         fi
     fi
 
-    echo "$mode $generate_report $show_deprecated $platform_filter $environment"
+    GT_ARG_MODE="$mode"
+    GT_ARG_REPORT="$generate_report"
+    GT_ARG_DEPRECATED="$show_deprecated"
+    GT_ARG_PLATFORM="$platform_filter"
+    GT_ARG_ENV="$environment"
+    return 0
 }
 
 # =============================================================================
@@ -795,6 +817,256 @@ check_merge_chain_legacy() {
 # =============================================================================
 # ENVIRONMENT-SPECIFIC CHECKS (CONFIG-DRIVEN)
 # =============================================================================
+#
+# The role-specific helpers below were CALLED by check_environment_specific but
+# never defined, so `verify-sync --env <branch>` emitted a series of
+# "command not found" errors and still exited 0.
+#
+# They are deliberately thin: each one delegates to a function that already
+# exists and is already exercised by the comprehensive run, rather than
+# introducing a second, divergent implementation of the same analysis.
+
+# --- production role ---------------------------------------------------------
+
+check_production_tags() {
+    local platform_filter="${1:-}"
+
+    log_info "Production tags:"
+    local tags; tags=$(get_all_production_tags "$platform_filter")
+    local count; count=$(count_lines "$tags")
+
+    if [ "$count" -eq 0 ]; then
+        log_info "  • None yet"
+        log_empty ""
+        return 0
+    fi
+
+    local latest; latest=$(echo "$tags" | sort -V | tail -1)
+    log_info "  • Total:  $count"
+    log_info "  • Latest: $latest"
+    log_empty ""
+    return 0
+}
+
+check_production_sync_status() {
+    local platform_filter="${1:-}"
+
+    log_info "Production propagation:"
+    local ok=true
+
+    # Production must be contained in staging, and staging in develop.
+    if ! check_branch_sync_status "$PRODUCTION_BRANCH" "$STAGING_BRANCH" "subset" true; then
+        log_info "  • ❌ $PRODUCTION_BRANCH not fully merged into $STAGING_BRANCH"
+        ok=false
+    else
+        log_info "  • ✅ $PRODUCTION_BRANCH ⊆ $STAGING_BRANCH"
+    fi
+
+    if ! check_branch_sync_status "$STAGING_BRANCH" "$DEVELOP_BRANCH" "subset" true; then
+        log_info "  • ❌ $STAGING_BRANCH not fully merged into $DEVELOP_BRANCH"
+        ok=false
+    else
+        log_info "  • ✅ $STAGING_BRANCH ⊆ $DEVELOP_BRANCH"
+    fi
+
+    # Do any staging RCs still predate the newest production release?
+    local latest_production; latest_production=$(get_latest_production_tag "$platform_filter")
+    if [ -n "$latest_production" ]; then
+        source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-production.sh"
+        if ! check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1; then
+            log_info "  • ⚠️  Staging RCs predate production $latest_production"
+            log_info "       Run: git trident staging sync-tags $latest_production --dry-run"
+            ok=false
+        else
+            log_info "  • ✅ Staging RCs include production $latest_production"
+        fi
+    fi
+
+    log_empty ""
+    [ "$ok" = true ]
+}
+
+validate_production_tags() {
+    local platform_filter="${1:-}"
+
+    log_info "Production tag format:"
+    local tags; tags=$(get_all_production_tags "$platform_filter")
+    if [ -z "$tags" ]; then
+        log_info "  • No production tags to validate"
+        log_empty ""
+        return 0
+    fi
+
+    local all_ok=true tag version
+    for tag in $tags; do
+        version=$(echo "$tag" | sed "s|^${PRODUCTION_TAG_PREFIX}||")
+        if is_platform_specific_mode; then
+            if [[ ! "$version" =~ ^[a-zA-Z0-9_-]+-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                log_info "  • ❌ $tag (expected platform-MAJOR.MINOR.PATCH)"; all_ok=false
+            fi
+        else
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                log_info "  • ❌ $tag (expected MAJOR.MINOR.PATCH)"; all_ok=false
+            fi
+        fi
+    done
+
+    [ "$all_ok" = true ] && log_info "  • ✅ All production tags well-formed"
+    log_empty ""
+    [ "$all_ok" = true ]
+}
+
+# --- staging role ------------------------------------------------------------
+
+check_staging_tags() {
+    local platform_filter="${1:-}"
+
+    log_info "Staging release candidates:"
+    local tags; tags=$(get_all_staging_tags "$platform_filter")
+    if [ -z "$tags" ]; then
+        log_info "  • None yet"
+        log_empty ""
+        return 0
+    fi
+
+    local suffix; suffix="$(get_rc_suffix)"
+    local base_versions
+    base_versions=$(echo "$tags" \
+        | sed "s|^${STAGING_TAG_PREFIX}||" \
+        | sed "s|${suffix}[0-9]*$||" \
+        | sort -V | uniq)
+
+    local base latest rc_count
+    for base in $base_versions; do
+        latest=$(git tag -l "${STAGING_TAG_PREFIX}${base}${suffix}*" 2>/dev/null | sort -V | tail -1)
+        rc_count=$(count_lines "$(git tag -l "${STAGING_TAG_PREFIX}${base}${suffix}*" 2>/dev/null)")
+        log_info "  • $base — $rc_count RC(s), latest: ${latest:-none}"
+    done
+    log_empty ""
+    return 0
+}
+
+check_rc_sequence() {
+    local platform_filter="${1:-}"
+
+    log_info "RC numbering:"
+    # validate_rc_sequence_for_platform works in BOTH modes: get_all_staging_tags
+    # treats an empty platform filter as "all staging tags", which is exactly
+    # legacy behaviour.
+    if validate_rc_sequence_for_platform "$platform_filter" false; then
+        log_info "  • ✅ RC sequences are contiguous"
+        log_empty ""
+        return 0
+    fi
+    log_empty ""
+    return 1
+}
+
+check_hotfix_propagation_status() {
+    local platform_filter="${1:-}"
+
+    log_info "Hotfix propagation:"
+    local suffix; suffix="$(get_rc_suffix)"
+    local tags; tags=$(get_all_staging_tags "$platform_filter")
+    if [ -z "$tags" ]; then
+        log_info "  • No staging versions in flight"
+        log_empty ""
+        return 0
+    fi
+
+    source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-staging.sh"
+
+    local base_versions
+    base_versions=$(echo "$tags" \
+        | sed "s|^${STAGING_TAG_PREFIX}||" \
+        | sed "s|${suffix}[0-9]*$||" \
+        | sort -V | uniq)
+
+    local all_ok=true base checked=0
+    for base in $base_versions; do
+        # Versions already released to production are not propagation targets.
+        if git rev-parse "${PRODUCTION_TAG_PREFIX}${base}" >/dev/null 2>&1; then
+            continue
+        fi
+        checked=$((checked + 1))
+        if ! detect_staging_hotfix_impact "$base" >/dev/null 2>&1; then
+            log_info "  • ⚠️  $base may need propagation"
+            log_info "       Run: git trident staging sync-tags $base --dry-run"
+            all_ok=false
+        fi
+    done
+
+    if [ "$checked" -eq 0 ]; then
+        log_info "  • No in-flight staging versions (all released)"
+    elif [ "$all_ok" = true ]; then
+        log_info "  • ✅ All in-flight versions are up to date"
+    fi
+    log_empty ""
+    [ "$all_ok" = true ]
+}
+
+# --- development role --------------------------------------------------------
+
+check_unmerged_features() {
+    local branch_name="$1"
+
+    log_info "Unmerged branches:"
+    local unmerged
+    unmerged=$(git branch --no-merged "$branch_name" 2>/dev/null \
+        | sed 's/^[* ]*//' \
+        | grep -v "^$PRODUCTION_BRANCH$" \
+        | grep -v "^$STAGING_BRANCH$" \
+        | grep -v "^$DEVELOP_BRANCH$")
+
+    local count; count=$(count_lines "$unmerged")
+    if [ "$count" -eq 0 ]; then
+        log_info "  • ✅ Everything is merged into $branch_name"
+        log_empty ""
+        return 0
+    fi
+
+    log_info "  • $count branch(es) not merged into $branch_name:"
+    echo "$unmerged" | head -10 | while read -r b; do
+        [ -n "$b" ] && log_info "      - $b"
+    done
+    [ "$count" -gt 10 ] && log_info "      ... and $((count - 10)) more"
+    log_empty ""
+    return 0
+}
+
+check_pending_releases() {
+    local platform_filter="${1:-}"
+
+    log_info "Pending releases (staged, not yet in production):"
+    local suffix; suffix="$(get_rc_suffix)"
+    local tags; tags=$(get_all_staging_tags "$platform_filter")
+    if [ -z "$tags" ]; then
+        log_info "  • None"
+        log_empty ""
+        return 0
+    fi
+
+    local base_versions
+    base_versions=$(echo "$tags" \
+        | sed "s|^${STAGING_TAG_PREFIX}||" \
+        | sed "s|${suffix}[0-9]*$||" \
+        | sort -V | uniq)
+
+    local pending=0 base latest
+    for base in $base_versions; do
+        if git rev-parse "${PRODUCTION_TAG_PREFIX}${base}" >/dev/null 2>&1; then
+            continue
+        fi
+        latest=$(git tag -l "${STAGING_TAG_PREFIX}${base}${suffix}*" 2>/dev/null | sort -V | tail -1)
+        log_info "  • $base — latest RC: ${latest:-none}"
+        pending=$((pending + 1))
+    done
+
+    [ "$pending" -eq 0 ] && log_info "  • None — every staging version is released"
+    log_empty ""
+    return 0
+}
+
 
 check_environment_specific() {
     local branch_name="$1"  # Branch name to check
@@ -823,24 +1095,28 @@ check_environment_specific() {
     log_info "Branch role: $branch_role"
     log_empty ""
 
-    # Perform role-specific checks
+    # Perform role-specific checks. Track failures so the exit status is
+    # meaningful: previously every path fell through to exit 0, including the
+    # one that printed "command not found" eight times.
+    local checks_ok=true
+
     case "$branch_role" in
         "production")
             check_branch_relationships "$branch_name" "$PRODUCTION_BRANCH"
-            check_production_tags "$platform_filter"
-            check_production_sync_status "$platform_filter"
-            validate_production_tags "$platform_filter"
+            check_production_tags "$platform_filter"        || checks_ok=false
+            check_production_sync_status "$platform_filter" || checks_ok=false
+            validate_production_tags "$platform_filter"     || checks_ok=false
             ;;
         "staging")
             check_branch_relationships "$branch_name" "$STAGING_BRANCH"
-            check_staging_tags "$platform_filter"
-            check_rc_sequence "$platform_filter"
-            check_hotfix_propagation_status "$platform_filter"
+            check_staging_tags "$platform_filter"                || checks_ok=false
+            check_rc_sequence "$platform_filter"                 || checks_ok=false
+            check_hotfix_propagation_status "$platform_filter"   || checks_ok=false
             ;;
         "development")
             check_branch_relationships "$branch_name" "$DEVELOP_BRANCH"
-            check_unmerged_features "$branch_name"
-            check_pending_releases "$platform_filter"
+            check_unmerged_features "$branch_name"      || checks_ok=false
+            check_pending_releases "$platform_filter"   || checks_ok=false
             ;;
         "custom")
             log_info "Custom branch checks:"
@@ -850,6 +1126,7 @@ check_environment_specific() {
     esac
 
     log_info "═════════════════════════════════════════════════════════════════"
+    [ "$checks_ok" = true ]
 }
 
 # Generic branch relationship checker
@@ -1291,8 +1568,14 @@ show_brief_status() {
 # =============================================================================
 
 main() {
-    # Parse arguments
-    IFS=' ' read -r mode generate_report show_deprecated platform_filter environment <<< "$(parse_arguments "$@")"
+    # Parse arguments (sets GT_ARG_*; exits directly on bad input)
+    parse_arguments "$@" || exit 1
+
+    local mode="$GT_ARG_MODE"
+    local generate_report="$GT_ARG_REPORT"
+    local show_deprecated="$GT_ARG_DEPRECATED"
+    local platform_filter="$GT_ARG_PLATFORM"
+    local environment="$GT_ARG_ENV"
 
     # Apply platform filter if specified
     if [ -n "$platform_filter" ]; then

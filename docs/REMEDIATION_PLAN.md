@@ -1172,11 +1172,11 @@ Items **not** absorbed by Phase 3:
   so the index is the only portable source of truth — now asserted by **T0.4** `bc_14`.
 
 ### Phase 1 — P0
-- [ ] **P0-1** Keep `v` prefix for `INSTALL_VERSION`; real version comparison — **S**
-- [ ] **P0-2** `-X` as array element (**`${a[@]+"${a[@]}"}` form**); stop hiding git stderr; separate conflict from failure — **S**
-- [ ] **P0-3** Fix `--env` arg parsing; then **decide Option A or B** for the 8 missing checks — **M**
-- [ ] **P0-4** `gt_count_lines` + empty-guard before the tag loop — **S**
-- [ ] **P0-5** `SUPPRESS_CONFIG_ERRORS=true` in the hooks loader — **S**
+- [x] **P0-1** Tag kept verbatim for the URL (HTTP 200, was 404); `is_version_greater` comparison prevents downgrades — **DONE**
+- [x] **P0-2** `-X` as separate argv (`${a[@]+…}` form); git stderr captured; conflict vs. non-conflict failures now distinguished — **DONE**
+- [x] **P0-3** Parser sets `GT_ARG_*` globals (no echo/`read` field collapse); **Option B** taken — all 8 checks implemented as thin delegations; exit status now propagates — **DONE**
+- [x] **P0-4** `count_lines()` in common.sh + empty-guard before the tag loop (4 sites) — **DONE**
+- [x] **P0-5** `SUPPRESS_CONFIG_ERRORS=true` in the hooks loader **and** an opt-in check in `check_hooks_enabled` (the second noise path) — **DONE**
 - [x] **P0-6** Removed `declare -A` + the Bash-4 shim; hardened 3 array expansions for `set -u` on 3.2 — **DONE**
 
 ### Phase 2 — P1
@@ -1215,8 +1215,13 @@ Items **not** absorbed by Phase 3:
 
 Three items need a product call before implementation:
 
-1. **P0-3** — cut `--env` down to what exists (**Option A**), or implement the eight
-   missing checks (**Option B**, ~150 lines, makes `--env` the best diagnostic in the tool)?
+1. ~~**P0-3** — Option A or B?~~ **RESOLVED: Option B.** All eight checks were
+   implemented as thin delegations to functions that already existed and were already
+   exercised by the comprehensive run (`get_all_*_tags`, `check_branch_sync_status`,
+   `validate_rc_sequence_for_platform`, `check_staging_releases_need_rebase`,
+   `detect_staging_hotfix_impact`), so no second implementation of any analysis was
+   introduced. Option A would have left `production`, `staging` and `development`
+   roles producing identical output, which is honest but near-useless.
 2. **A2** — accept that configs stop being executable shell? It is the correct fix, but it
    is a breaking change for anyone using shell expressions in `git-trident-config`.
    Proposed: `CONFIG_PARSER=strict|legacy` for one minor version.

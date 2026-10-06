@@ -543,7 +543,12 @@ check_for_updates() {
     local latest_tag=""
     if [[ -n "$response" ]]; then
         # Robust JSON parsing: strips optional leading 'v' if present
-        latest_tag=$(echo "$response" | awk -F'"' '/"tag_name":/ {print $4; exit}' | sed 's/^v//')
+        # Keep the tag EXACTLY as GitHub reports it (e.g. "v0.1.1"). It is the
+        # release identifier used to build the download URL, so stripping the
+        # leading "v" here produced a URL that always 404'd:
+        #   .../releases/download/0.1.1/git-trident.tar.gz   -> 404
+        #   .../releases/download/v0.1.1/git-trident.tar.gz  -> 200
+        latest_tag=$(echo "$response" | awk -F'"' '/"tag_name":/ {print $4; exit}')
     fi
 
     if [[ -z "$latest_tag" ]]; then
@@ -556,11 +561,21 @@ check_for_updates() {
     log_info "   • Latest Tag:    $latest_tag"
     log_empty ""
 
-    local cur_clean="$current_version"
-    local new_clean="$latest_tag"
+    # Compare on the numeric version; "v" belongs to the tag, not the version.
+    local latest_version="${latest_tag#v}"
 
-    if [[ "$cur_clean" == "$new_clean" ]]; then
+    if [[ "$current_version" == "$latest_version" ]]; then
         log_info "✅ You are running the latest version ($current_version)."
+        log_empty ""
+        return 0
+    fi
+
+    # A local build can legitimately be AHEAD of the newest published release.
+    # String inequality alone would offer a silent downgrade, so require that
+    # the remote version is genuinely greater before reporting an update.
+    if ! is_version_greater "$latest_version" "$current_version"; then
+        log_info "✅ You are running $current_version, which is ahead of the latest"
+        log_info "   published release ($latest_version). Nothing to do."
         log_empty ""
         return 0
     fi
@@ -568,7 +583,7 @@ check_for_updates() {
     # An update is available — handle according to mode
     case "$mode" in
         check)
-            log_warn "🚀 Update available: $current_version → $latest_tag"
+            log_warn "🚀 Update available: $current_version → $latest_version"
             log_info "👉 Run 'git trident version update' to install."
             log_empty ""
             return 1   # Non-zero exit code signals "update available" for scripts
@@ -576,7 +591,7 @@ check_for_updates() {
         dry-run)
             log_info "🔍 DRY RUN — No changes will be made."
             log_info "   Current:  $current_version"
-            log_info "   Latest:   $latest_tag"
+            log_info "   Latest:   $latest_version  (tag: $latest_tag)"
             log_info "   Source:   https://github.com/${GITHUB_REPO}/releases/tag/${latest_tag}"
             log_info "   Action:   Download installer to temp file"
             log_info "             Run: INSTALL_VERSION=$latest_tag bash <tmp-file>"
@@ -584,11 +599,11 @@ check_for_updates() {
             return 0
             ;;
         update)
-            log_warn "🚀 Update available: $current_version → $latest_tag"
+            log_warn "🚀 Update available: $current_version → $latest_version"
             log_empty ""
 
             if [[ "$auto_apply" != true ]]; then
-                echo -n "Install $current_version → $latest_tag? [Y/n]: "
+                echo -n "Install $current_version → $latest_version? [Y/n]: "
                 read -r response
                 if [[ "$response" =~ ^([nN][oO]?|[nN])$ ]]; then
                     log_info "Update cancelled."
@@ -596,7 +611,7 @@ check_for_updates() {
                 fi
             fi
 
-            log_step "Initiating upgrade to $latest_tag..."
+            log_step "Initiating upgrade to $latest_version..."
 
             if ! command -v curl >/dev/null 2>&1; then
                 log_error "curl is required to perform auto-upgrade."
@@ -617,7 +632,7 @@ check_for_updates() {
             export INSTALL_VERSION="$latest_tag"
             if bash "$tmp_installer"; then
                 rm -f "$tmp_installer"
-                log_info "✅ Successfully upgraded to $latest_tag!"
+                log_info "✅ Successfully upgraded to $latest_version!"
                 exit 0
             else
                 rm -f "$tmp_installer"

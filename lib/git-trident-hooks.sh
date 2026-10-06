@@ -18,7 +18,23 @@ if [[ -z "${GIT_TRIDENT_HOOKS_LOADED:-}" ]]; then
     # GIT_TRIDENT_HOOK_MODE=true prevents git-trident-common.sh from calling exit 1 at source time
     GIT_TRIDENT_HOOK_MODE=true
     source "$SCRIPT_DIR/git-trident-common.sh"
-    load_project_config || true
+
+    # SUPPRESS_CONFIG_ERRORS is essential here, not cosmetic.
+    #
+    # Hooks are normally installed globally via core.hooksPath, so this file is
+    # sourced on EVERY commit in EVERY repository on the machine — including
+    # repositories that have nothing to do with Git Trident. Without this,
+    # load_project_config printed seven [ERROR] lines before allowing the commit:
+    #
+    #   $ git commit -m "chore: unrelated project"
+    #   [ERROR] ❌ No project configuration file found.
+    #   [ERROR]    Git Trident requires a project config to operate...
+    #   [main 54f02fd] chore: unrelated project        <- succeeded anyway
+    #
+    # A repository without a project config has simply not opted in; that is a
+    # normal state for a global hook to encounter, not an error to report.
+    SUPPRESS_CONFIG_ERRORS=true load_project_config || true
+
     log_debug "Git Trident Hooks utilities loaded"
 fi
 
@@ -155,7 +171,18 @@ check_hooks_enabled() {
         return 1
     fi
 
-    # 3. Check granular hook setting (if hook_name provided)
+    # 3. Has this repository opted in at all?
+    #
+    # HOOKS_ENABLED lives in the GLOBAL config, so it is true for every
+    # repository on the machine. A repository with no project config has not
+    # opted into Git Trident, so the hook must be a silent no-op there rather
+    # than reporting a configuration problem the user does not have.
+    if [[ "${CONFIG_LOADED:-false}" != "true" ]]; then
+        log_debug "No Git Trident project config in this repository; hooks inactive"
+        return 1
+    fi
+
+    # 4. Check granular hook setting (if hook_name provided)
     if [[ -n "$hook_name" ]]; then
         # Convert hook-name to HOOK_HOOK_NAME_ENABLED
         local var_name="HOOK_$(echo "$hook_name" | tr 'a-z-' 'A-Z_')_ENABLED"

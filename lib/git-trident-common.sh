@@ -721,6 +721,24 @@ assert_clean_working_tree() {
 # GIT LOG UTILITIES
 # =============================================================================
 
+# Count non-empty lines in a string.
+#
+# `echo "" | wc -l` returns 1, not 0, because echo emits a newline. Counting a
+# possibly-empty list that way reports one phantom item, which in platform mode
+# made push-all iterate once over an empty string and fail with
+# "Failed to push 1 tags:" when there was nothing to push.
+#
+# `grep -c .` counts lines containing at least one character, so an empty or
+# whitespace-only string correctly yields 0.
+count_lines() {
+    local value="$1"
+    if [[ -z "$value" ]]; then
+        echo 0
+        return 0
+    fi
+    printf '%s\n' "$value" | grep -c . | tr -d ' '
+}
+
 # Count commits in range
 git_log_count() {
     local range_spec="$1"
@@ -951,40 +969,58 @@ interactive_merge() {
         return 1
     fi
 
-    # Determine merge strategy based on CONFLICT_STRATEGY
-    local merge_strategy_args=""
+    # Determine merge strategy based on CONFLICT_STRATEGY.
+    #
+    # Each flag must be a SEPARATE argv element. Previously this was built as a
+    # single string "-X ours", which git received as one argument:
+    #     git merge --no-ff "-X ours" <src> -m <msg>
+    #     fatal: unknown strategy option: -X ours
+    # so prefer-ours / prefer-theirs never worked at all.
+    local strategy_args=()
     case "${CONFLICT_STRATEGY:-interactive}" in
         "prefer-ours")
-            merge_strategy_args="-X ours"
+            strategy_args=(-X ours)
             log_info "Using merge strategy: prefer-ours"
             ;;
         "prefer-theirs")
-            merge_strategy_args="-X theirs"
+            strategy_args=(-X theirs)
             log_info "Using merge strategy: prefer-theirs"
             ;;
         "interactive"|*)
-            merge_strategy_args=""
+            strategy_args=()
             ;;
     esac
 
-    # Build merge command as array to avoid empty argument issues
-    local merge_cmd=(git merge --no-ff)
-    if [ -n "$merge_strategy_args" ]; then
-        merge_cmd+=("$merge_strategy_args")
-    fi
     # Prepend bypass marker for tool-generated commits
     local message_with_marker="[flow]: $commit_message"
-    merge_cmd+=("$source_ref" -m "$message_with_marker")
 
-    # Perform merge
-    if "${merge_cmd[@]}" 2>/dev/null; then
+    # NOTE: ${arr[@]+"${arr[@]}"} rather than "${arr[@]}". `interactive` is the
+    # default, so strategy_args is EMPTY on the common path, and on Bash 3.2
+    # expanding an empty array under `set -u` raises "unbound variable".
+    local merge_output merge_rc
+    merge_output=$(git merge --no-ff ${strategy_args[@]+"${strategy_args[@]}"} \
+                             "$source_ref" -m "$message_with_marker" 2>&1)
+    merge_rc=$?
+
+    if [ $merge_rc -eq 0 ]; then
         log_info "✓ Successfully merged $source_ref into $target_branch"
         return 0
-    else
-        # Merge conflict detected - handle interactively
+    fi
+
+    # A non-zero exit is NOT necessarily a conflict. git's stderr used to be sent
+    # to /dev/null, so an invalid option, a missing ref or a dirty tree were all
+    # reported to the user as "merge conflict detected" and they were dropped into
+    # a conflict-resolution prompt with no conflict to resolve. Distinguish them.
+    if has_unresolved_conflicts; then
         handle_merge_conflict "$target_branch" "$source_ref" "$context"
         return $?
     fi
+
+    log_error "❌ Merge of $source_ref into $target_branch failed (not a conflict):"
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && log_empty "   $_line"
+    done <<< "$merge_output"
+    return 1
 }
 
 # Handle merge conflict with user interaction
