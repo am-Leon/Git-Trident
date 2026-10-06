@@ -16,7 +16,7 @@ source "$SCRIPT_DIR/git-trident-version-utils.sh"
 # VALIDATION FUNCTIONS
 # =============================================================================
 
-validate_release_branch_exists() {
+stg_validate_release_branch_exists() {
     local version="$1"
     local release_branch="${RELEASE_STAGING_PREFIX}${version}"
 
@@ -30,7 +30,7 @@ validate_release_branch_exists() {
     fi
 }
 
-validate_hotfix_branch_exists() {
+stg_validate_hotfix_branch_exists() {
     local version="$1"
     local hotfix_branch="${HOTFIX_STAGING_PREFIX}${version}"
 
@@ -157,7 +157,7 @@ create_staging_release_branch() {
         "Created and switched to $release_branch"
 }
 
-show_release_preparation_summary() {
+stg_show_release_preparation_summary() {
     local release_branch="$1"
     local version="$2"
     local starting_point="$3"
@@ -190,7 +190,7 @@ staging_release_start() {
 
     # Show summary
     local release_branch="${RELEASE_STAGING_PREFIX}${version}"
-    show_release_preparation_summary "$release_branch" "$version" "$starting_point"
+    stg_show_release_preparation_summary "$release_branch" "$version" "$starting_point"
 }
 
 # =============================================================================
@@ -266,7 +266,7 @@ sync_staging_to_develop_after_release() {
     return 0
 }
 
-show_release_completion_summary() {
+stg_show_release_completion_summary() {
     local version="$1"
     local rc_number="$2"
     local tag_name="$3"
@@ -314,7 +314,7 @@ staging_release_finish() {
     assert_clean_working_tree
 
     # Validate release branch exists
-    if ! validate_release_branch_exists "$version"; then
+    if ! stg_validate_release_branch_exists "$version"; then
         log_error "Cannot finish staging release - branch not found"
         log_info "Please run: git trident staging release start $version first"
         exit 1
@@ -346,7 +346,7 @@ staging_release_finish() {
     auto_push_if_enabled "$version"
 
     # Step 6: Show summary
-    show_release_completion_summary "$version" "$rc_number" "$tag_name"
+    stg_show_release_completion_summary "$version" "$rc_number" "$tag_name"
 
     return 0
 }
@@ -439,7 +439,7 @@ create_staging_hotfix_branch() {
         "Created and switched to $hotfix_branch"
 }
 
-show_hotfix_preparation_summary() {
+stg_show_hotfix_preparation_summary() {
     local hotfix_branch="$1"
     local version="$2"
     local latest_rc="$3"
@@ -469,14 +469,14 @@ staging_hotfix_start() {
 
     # Show summary
     local hotfix_branch="${HOTFIX_STAGING_PREFIX}${version}"
-    show_hotfix_preparation_summary "$hotfix_branch" "$version" "$latest_rc"
+    stg_show_hotfix_preparation_summary "$hotfix_branch" "$version" "$latest_rc"
 }
 
 # =============================================================================
 # HOTFIX COMPLETION OPERATIONS (WITH CLEAN MERGE CHAIN)
 # =============================================================================
 
-show_hotfix_changes() {
+stg_show_hotfix_changes() {
     local hotfix_branch="$1"
     local latest_rc="$2"
     local tag_name="$3"
@@ -584,7 +584,7 @@ check_hotfix_impact() {
     fi
 }
 
-show_hotfix_completion_summary() {
+stg_show_hotfix_completion_summary() {
     local version="$1"
     local rc_number="$2"
     local tag_name="$3"
@@ -647,7 +647,7 @@ staging_hotfix_finish() {
     assert_clean_working_tree
 
     # Validate hotfix branch exists
-    if ! validate_hotfix_branch_exists "$version"; then
+    if ! stg_validate_hotfix_branch_exists "$version"; then
         log_error "Cannot finish staging hotfix - branch not found"
         log_info "Please run: git trident staging hotfix start $version first"
         exit 1
@@ -667,7 +667,7 @@ staging_hotfix_finish() {
     fi
 
     # Show and confirm hotfix changes
-    if ! show_hotfix_changes "$hotfix_branch" "$latest_rc" "$tag_name"; then
+    if ! stg_show_hotfix_changes "$hotfix_branch" "$latest_rc" "$tag_name"; then
         return 1
     fi
 
@@ -692,7 +692,7 @@ staging_hotfix_finish() {
     check_hotfix_impact "$version"
 
     # Step 7: Show summary
-    show_hotfix_completion_summary "$version" "$rc_number" "$tag_name"
+    stg_show_hotfix_completion_summary "$version" "$rc_number" "$tag_name"
 
     gt_release_rc_lock
     trap - EXIT INT TERM

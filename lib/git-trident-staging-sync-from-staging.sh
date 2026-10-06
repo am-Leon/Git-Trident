@@ -439,7 +439,7 @@ propagate_staging_hotfix() {
 # DETECTION FUNCTION (--dry-run MODE WITH PLATFORM CLASSIFICATION)
 # =============================================================================
 
-show_detection_analysis() {
+stg_sync_show_detection_analysis() {
     local latest_rcs_to_check="$1"
     local hotfix_tag="$2"
     local hotfix_version="$3"
@@ -590,7 +590,7 @@ detect_staging_hotfix_impact() {
 
     # Analyze and get results as array
     local analysis_result
-    analysis_result=$(show_detection_analysis "$latest_rcs_needing_hotfix" "$hotfix_tag" "$hotfix_version")
+    analysis_result=$(stg_sync_show_detection_analysis "$latest_rcs_needing_hotfix" "$hotfix_tag" "$hotfix_version")
 
     # Parse the result: first two values are counts, next two are hotfix info, rest are tags
     IFS=' ' read -r affected_count total_count hf_tag hf_version remaining <<< "$analysis_result"

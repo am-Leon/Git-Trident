@@ -273,10 +273,25 @@ _warn_global_only_keys_in_project_config() {
 # overridden back to the global value after the project file is sourced.
 # ---------------------------------------------------------------------------
 load_project_config() {
-    # Prevent duplicate configuration loading within the same session
+    # Prevent duplicate configuration loading within the same session.
+    #
+    # The flag alone is not sufficient evidence. CONFIG_LOADED can arrive from
+    # the ENVIRONMENT — inherited from a parent process, or exported by a user
+    # or a test fixture — in which case the values it claims to vouch for may
+    # not be set at all. Short-circuiting then yields an empty configuration
+    # and nonsense results (branch desynchronisation reported on a synchronised
+    # repository). Require a required key to actually be present.
     if [[ "$CONFIG_LOADED" == "true" ]]; then
-        log_debug "Configuration already loaded from: $CONFIG_SOURCE"
-        return 0
+        # Trust the flag only if SOMETHING was actually configured. Callers that
+        # set CONFIG_LOADED deliberately (hook fixtures, tests) also set the keys
+        # they care about; an inherited flag from a parent process comes with
+        # nothing, because configuration values are no longer exported.
+        if [[ -n "${PRODUCTION_BRANCH:-}" || -n "${STAGING_TAG_PREFIX:-}" || -n "${COMMIT_PREFIXES:-}" ]]; then
+            log_debug "Configuration already loaded from: ${CONFIG_SOURCE:-caller}"
+            return 0
+        fi
+        log_debug "CONFIG_LOADED was set but no configuration is present; reloading."
+        CONFIG_LOADED=false
     fi
 
     # ── Guard 1: Are we inside a Git repository? ──
@@ -406,14 +421,23 @@ load_project_config() {
 
     # Record the primary source for diagnostics
     if [[ -n "$project_file" ]]; then
-        export CONFIG_SOURCE="$project_file (+ $global_config)"
+        CONFIG_SOURCE="$project_file (+ $global_config)"
     else
-        export CONFIG_SOURCE="$global_config"
+        CONFIG_SOURCE="$global_config"
     fi
-    export CONFIG_LOADED=true
+    # NOT exported. Under the strict parser the values are set with `printf -v`
+    # rather than `set -a`, so they do not cross a process boundary. Exporting
+    # only the FLAG made child processes short-circuit load_project_config and
+    # then find every setting empty — `git trident status` reported branch
+    # desynchronisation on a perfectly synchronised repository, while running
+    # git-trident-verify-sync directly worked.
+    #
+    # Each process loads its own configuration. That is a file read, and it
+    # keeps configuration out of the environment entirely.
+    CONFIG_LOADED=true
 
     # Set validation mode from whichever config set it, or default to strict
-    export CONFIG_VALIDATION_MODE="${CONFIG_VALIDATION_MODE:-strict}"
+    CONFIG_VALIDATION_MODE="${CONFIG_VALIDATION_MODE:-strict}"
 
     # ------------------------------------------------------------------
     # Step 4 — Validate & apply defaults
@@ -631,10 +655,9 @@ setup_optional_config_defaults() {
         local default_value="${optional_var#*=}"
         
         if [[ -z "${!var_name:-}" ]]; then
-            export "$var_name"="$default_value"
+            # Plain assignment, not export: see the note on CONFIG_LOADED above.
+            printf -v "$var_name" '%s' "$default_value"
             log_debug "Set default for optional $var_name: $default_value"
-        else
-            export "$var_name"="${!var_name}"
         fi
     done
 }
@@ -897,10 +920,9 @@ get_current_branch() {
     git branch --show-current 2>/dev/null || git symbolic-ref --short HEAD 2>/dev/null
 }
 
-# Check if it's a valid git reference (branch, tag, or commit)
-is_valid_tag() {
-    git rev-parse "$1" >/dev/null 2>&1
-}
+# NOTE: is_valid_tag lives in git-trident-version-utils.sh, which owns tag
+# concerns. An identical copy used to be defined here too; whichever file was
+# sourced last silently won.
 
 # Show available tags for environment
 show_available_tags() {

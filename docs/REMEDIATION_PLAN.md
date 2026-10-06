@@ -1209,17 +1209,35 @@ Items **not** absorbed by Phase 3:
 ### Phase 3 — Architecture
 - [x] **A1a** Preamble in 11 entry points; `discover_install_dir` simplified, GNU-only `readlink -f` eliminated — **DONE** _(remaining: thread `GT_INSTALL_ROOT` into `version update` (P1-6), `common.sh:252-253` and `help.sh:703` (P3-7))_
 - [ ] **A1b** `git-trident-context.sh` → `GT_REPO_ROOT` / `GT_GIT_DIR`; replace all cwd- and `.git`-relative paths — **M**
-- [ ] **A2** Strict config parser; retire `source` + `set -a` + the snapshot/restore hack — **L**
-- [ ] **A3** `gt_*` namespacing; add a duplicate-symbol test — **M**
-- [ ] **A4** Globals instead of echo-returns in all parsers — **M**
-- [ ] **A5** `gt_git` wrapper; migrate merge → tag → push → delete — **L**
-- [ ] **A6** Boolean convention + renames + CONTRIBUTING entry — **S**
-- [ ] **A7** Single mkdir lock held across allocate→tag; RC computed once — **M**
-- [ ] **A8** `git-trident-tagspec.sh` + `gt_regex_escape`; exotic-suffix tests — **M**
-- [ ] **A9** `set -o pipefail` everywhere; **`set -u` withdrawn**; audit 84 array expansions to `${a[@]+…}` — **M**
-- [ ] **A10** stdout/stderr contract — **S**
-- [ ] **A11** `--help` before config load and pre-op checks — **S**
-- [ ] **A12** Remove 13 dead functions + dead vars + webhook block — **S**
+- [x] **A2** `_parse_config_file` with an allowlist; `CONFIG_PARSER=legacy` escape hatch; snapshot/restore now legacy-only; config no longer exported — **DONE**
+- [x] **A3** **Targeted**: the 10 genuine lib/ collisions renamed (`stg_*`/`prod_*`/`stg_sync_*`/`prod_sync_*`), duplicate `is_valid_tag` dropped, `tests/test_no_duplicate_symbols.sh` guards regressions — **DONE** _(a full 367-function rename was judged high-churn/low-value; `main` and `parse_arguments` repeat across `bin/` by design, since those are separate processes)_
+- [x] **A4** All four parsers set `GT_ARG_*`; `analyze_tag_propagation_impact` emits six fields on every path — **DONE**
+- [x] **A5** `gt_git` / `gt_git_checked` added; `verify_step` and `push_branch` now surface git's real error — **DONE**
+- [x] **A6** `check_deprecated_tags_*` → `has_deprecated_tags_*`; convention documented in CONTRIBUTING.md — **DONE**
+- [x] **A7** touch-lock removed; mkdir lock held across allocate→tag with a trap; RC computed once — **DONE**
+- [x] **A8** `lib/git-trident-tagspec.sh` with separate ERE and BRE escapers; verified across `-rc- .rc. +rc+ _RC_ [rc]` — **DONE**
+- [x] **A9** `set -o pipefail` in all 11 entry points; `set -u` withdrawn (Bash 3.2) and blocked by T0.4 — **DONE**
+- [x] **A10** Platform summary table and brief-status lines moved to stderr — **DONE**
+- [x] **A11** Help detected across all argv before sourcing; 14 invocations verified outside a repository — **DONE**
+- [x] **A12** 20 dead functions + the webhook feature and its config keys removed (−461 lines) — **DONE**
+
+
+### Landed out-of-plan (Phase 3)
+
+- [x] **Config no longer crosses process boundaries.** A2 set values with `printf -v`
+  (not exported) while `CONFIG_LOADED=true` was still exported, so any `exec`-dispatched
+  subcommand short-circuited loading and then found every setting empty:
+  `git trident status` reported branch desynchronisation on a synchronised repository,
+  while `git-trident-verify-sync --brief` reported it correctly. Nothing is exported now,
+  and `load_project_config` ignores the flag when no configuration is actually present.
+- [x] **`tests/test_subprocess_config.sh`** — every suite passed both before and after
+  that bug, because they all source the libraries in-process. These tests drive the real
+  binaries: dispatcher vs direct invocation must agree, no config key may be exported, a
+  stale inherited flag must not blank the config, and dispatch must work from a
+  subdirectory.
+- [x] **`tests/test_no_duplicate_symbols.sh`** — fails when two `lib/` files define the
+  same function, which is how `show_detection_analysis` came to exist twice with
+  different parameter orders.
 
 ### Phase 4 — Remainder
 - [ ] **P2-1 … P2-7**, **P3-1 … P3-7** (table in §7)

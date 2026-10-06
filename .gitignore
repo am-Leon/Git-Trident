@@ -23,3 +23,5 @@ dist/
 # Test sandbox (tests/test_config_cleanup_hooks.sh)
 tests/sandbox_test/
 tests/sandbox_test_remote.git/
+tests/sandbox_subprocess/
+tests/sandbox_subprocess_remote.git/

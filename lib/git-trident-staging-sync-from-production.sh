@@ -521,7 +521,7 @@ rebase_staging_releases() {
 # DETECTION OPERATIONS (CHECK-ONLY MODE) WITH PLATFORM SUPPORT
 # =============================================================================
 
-show_detection_analysis() {
+prod_sync_show_detection_analysis() {
     local latest_rcs_to_check="$1"
     local production_version="$2"
     local production_tag="$3"
@@ -662,7 +662,7 @@ check_staging_releases_need_rebase() {
 
     # Analyze and get results
     local analysis_result
-    analysis_result=$(show_detection_analysis "$outdated_latest_tags" "$production_version" "$production_tag")
+    analysis_result=$(prod_sync_show_detection_analysis "$outdated_latest_tags" "$production_version" "$production_tag")
 
     # Parse the result: first two values are counts, next two are production info, rest are tags
     IFS=' ' read -r affected_count total_count prod_version prod_tag remaining <<< "$analysis_result"
