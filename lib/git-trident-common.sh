@@ -11,6 +11,13 @@ if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-constants.sh" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/git-trident-constants.sh"
 fi
 
+# Load repository context helpers (GT_REPO_ROOT / GT_GIT_DIR, gt_repo_path,
+# gt_git_path). Sourcing only DEFINES them; resolution happens in
+# load_project_config, because utility commands run outside a repository.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-context.sh" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/git-trident-context.sh"
+fi
+
 # Configuration state tracking
 CONFIG_LOADED=${CONFIG_LOADED:-false}
 CONFIG_SOURCE=${CONFIG_SOURCE:-"none"}
@@ -163,7 +170,9 @@ load_project_config() {
     fi
 
     # ── Guard 1: Are we inside a Git repository? ──
-    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    # gt_resolve_repo_context also establishes GT_REPO_ROOT / GT_GIT_DIR, which
+    # every path below depends on.
+    if ! gt_resolve_repo_context; then
         if [[ "${SUPPRESS_CONFIG_ERRORS:-false}" != "true" ]]; then
             log_error "❌ Not inside a Git repository."
             log_error "   Git Trident only works inside a Git project."
@@ -173,9 +182,11 @@ load_project_config() {
     fi
 
     local global_config="$HOME/$GLOBAL_CONFIG_FILE_NAME"
+    # Anchored to the REPOSITORY ROOT, not the current directory, so every
+    # command works from anywhere inside the working tree.
     local project_config_files=(
-        "./$CONFIG_FILE_NAME"    # Project root (explicit, committed)
-        "./.$CONFIG_FILE_NAME"   # Project root (hidden / git ignored)
+        "$(gt_repo_path "$CONFIG_FILE_NAME")"    # Project root (explicit, committed)
+        "$(gt_repo_path ".$CONFIG_FILE_NAME")"   # Project root (hidden / git ignored)
     )
 
     # ------------------------------------------------------------------
@@ -1051,7 +1062,7 @@ handle_merge_conflict() {
     log_empty ""
     if force_confirm_action "Have you resolved the conflicts for merging $source_ref into $target_branch${context:+ ($context)} and ready to continue?"; then
         # Check if we're still in a merge state
-        if [ -f ".git/MERGE_HEAD" ]; then
+        if [ -f "$(gt_git_path MERGE_HEAD)" ]; then
             # Still in merge - check if conflicts are resolved
             if has_unresolved_conflicts; then
                 log_error "Conflicts still exist! Please resolve all conflicts first."
@@ -1186,7 +1197,7 @@ sync_to_develop() {
 # Cross-platform atomic locking
 acquire_lock() {
     local lock_name="$1"
-    local lock_dir=".git/git-trident-locks"
+    local lock_dir="$(gt_git_path git-trident-locks)"
     local lock_path="$lock_dir/$lock_name"
     local max_wait=30
     local waited=0
@@ -1215,7 +1226,7 @@ acquire_lock() {
 # Release lock
 release_lock() {
     local lock_name="$1"
-    local lock_dir=".git/git-trident-locks"
+    local lock_dir="$(gt_git_path git-trident-locks)"
     local lock_path="$lock_dir/$lock_name"
 
     if [[ -d "$lock_path" ]]; then

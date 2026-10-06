@@ -333,7 +333,7 @@ get_rc_suffix(){
 # Get next RC number for a version
 get_next_rc_number() {
     local version="$1"
-    local lock_file=".git/git-trident-rc-lock"
+    local lock_file="$(gt_git_path git-trident-rc-lock)"
 
     # Simple locking mechanism to prevent race conditions
     local max_wait=10

@@ -240,7 +240,7 @@ check_common_platform_impact() {
 get_cached_remote_tags() {
     local remote="$1"
     local platform_filter="${2:-}"
-    local cache_file=".git/git-trident-remote-tags-$remote"
+    local cache_file="$(gt_git_path "git-trident-remote-tags-$remote")"
     local cache_age="${REMOTE_TAG_CACHE_DURATION:-300}"
 
     # Platform-specific cache file
@@ -260,9 +260,23 @@ get_cached_remote_tags() {
         log_debug "Cache expired (age: ${file_age}s), refreshing..."
     fi
 
-    # Fetch fresh remote tags (only Git Trident tags for efficiency)
+    # Fetch fresh remote tags (only Git Trident tags for efficiency).
+    #
+    # Capture ls-remote SEPARATELY from the filtering pipeline so its exit status
+    # is visible. Previously a network failure produced an empty result that was
+    # cached as authoritative for REMOTE_TAG_CACHE_DURATION (300s by default),
+    # after which every local tag looked unpushed.
     log_debug "Fetching remote tags from $remote..."
-    local remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null | \
+    local ls_remote_output ls_remote_rc
+    ls_remote_output=$(git ls-remote --tags "$remote" 2>/dev/null)
+    ls_remote_rc=$?
+
+    if [ $ls_remote_rc -ne 0 ]; then
+        log_warn "Could not reach remote '$remote'; not caching an empty tag list"
+        return 1
+    fi
+
+    local remote_tags=$(printf '%s\n' "$ls_remote_output" | \
         grep -E "(refs/tags/${STAGING_TAG_PREFIX}|refs/tags/${PRODUCTION_TAG_PREFIX})" | \
         cut -f2 | \
         sed 's|refs/tags/||')
@@ -289,19 +303,29 @@ clear_remote_tag_cache() {
     local platform_filter="${2:-}"
 
     if [ -n "$platform_filter" ]; then
-        local cache_file=".git/git-trident-remote-tags-$remote-$platform_filter"
+        local cache_file="$(gt_git_path "git-trident-remote-tags-$remote-$platform_filter")"
         if [ -f "$cache_file" ]; then
             rm -f "$cache_file"
             log_debug "Cleared platform-specific cache: $cache_file"
         fi
     else
-        # Clear all cache files for this remote
-        local cache_pattern=".git/git-trident-remote-tags-$remote*"
-        if ls "$cache_pattern" 2>/dev/null >/dev/null; then
-            rm -f "$cache_pattern"
-            log_debug "Cleared all cache files for remote: $remote"
-        fi
+        # Clear every cache file for this remote.
+        #
+        # The glob must be UNQUOTED so the shell expands it. The previous form,
+        #     cache_pattern=".git/git-trident-remote-tags-$remote*"
+        #     if ls "$cache_pattern"; then rm -f "$cache_pattern"; fi
+        # passed a literal '*' to ls and rm, so the test never succeeded and the
+        # cache was never cleared — leaving stale data for up to 300 seconds
+        # after a tag push.
+        local cleared=0 cache_file
+        for cache_file in "$(gt_git_path "git-trident-remote-tags-$remote")"*; do
+            [ -f "$cache_file" ] || continue   # no matches: the glob stays literal
+            rm -f "$cache_file"
+            cleared=$((cleared + 1))
+        done
+        [ "$cleared" -gt 0 ] && log_debug "Cleared $cleared cache file(s) for remote: $remote"
     fi
+    return 0
 }
 
 # =============================================================================

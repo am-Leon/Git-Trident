@@ -272,7 +272,7 @@ show_config_info() {
     fi
 
     local project_cfg_found=false
-    for pcfg in "./git-trident-config" "./.git-trident-config"; do
+    for pcfg in "$(gt_repo_path "$CONFIG_FILE_NAME")" "$(gt_repo_path ".$CONFIG_FILE_NAME")"; do
         if [[ -f "$pcfg" ]]; then
             local file_age; file_age=$(get_file_age "$pcfg" 2>/dev/null || echo "N/A")
             local age_display=""
@@ -594,7 +594,7 @@ check_for_updates() {
             log_info "   Latest:   $latest_version  (tag: $latest_tag)"
             log_info "   Source:   https://github.com/${GITHUB_REPO}/releases/tag/${latest_tag}"
             log_info "   Action:   Download installer to temp file"
-            log_info "             Run: INSTALL_VERSION=$latest_tag bash <tmp-file>"
+            log_info "             Run: INSTALL_VERSION=$latest_tag bash <tmp-file> \"$GT_INSTALL_ROOT\""
             log_empty ""
             return 0
             ;;
@@ -630,7 +630,15 @@ check_for_updates() {
 
             log_info "Running installer..."
             export INSTALL_VERSION="$latest_tag"
-            if bash "$tmp_installer"; then
+
+            # Pass the CURRENT install root. Without an argument the installer
+            # defaults to $HOME/.git-trident, so updating a custom installation
+            # created a SECOND copy at the default location and repointed the
+            # profile's PATH at it, silently orphaning the chosen directory.
+            # GT_INSTALL_ROOT comes from the entry-point preamble and is already
+            # symlink-resolved.
+            log_info "Install root: $GT_INSTALL_ROOT"
+            if bash "$tmp_installer" "$GT_INSTALL_ROOT"; then
                 rm -f "$tmp_installer"
                 log_info "✅ Successfully upgraded to $latest_version!"
                 exit 0

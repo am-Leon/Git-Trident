@@ -7,18 +7,38 @@ source "$SCRIPT_DIR/test_framework.sh"
 
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SANDBOX_DIR="$SCRIPT_DIR/sandbox_test"
+SANDBOX_REMOTE="$SCRIPT_DIR/sandbox_test_remote.git"
 
 # Setup sandbox
 setup_sandbox() {
     rm -rf "$SANDBOX_DIR"
     mkdir -p "$SANDBOX_DIR/home"
     cd "$SANDBOX_DIR" || exit 1
+
+    # The sandbox must be a REAL repository of its own.
+    #
+    # It lives at tests/sandbox_test, i.e. INSIDE the Git Trident checkout, so
+    # without `git init` here `git rev-parse --show-toplevel` resolves to the
+    # Git Trident repo root and the sandbox is just a subdirectory of it. That
+    # made these tests assert the old, broken behaviour: that a project config
+    # is read from the CURRENT DIRECTORY rather than the repository root.
+    git init -q -b develop . >/dev/null 2>&1
+    git config user.email "test@git-trident.local" >/dev/null 2>&1
+    git config user.name  "Git Trident Test"       >/dev/null 2>&1
+
+    # A real bare remote, because pre_operation_checks requires `origin` to
+    # exist and to be reachable. The sandbox used to inherit Git Trident's own
+    # origin by virtue of being a subdirectory of it — an accident, not a
+    # fixture.
+    rm -rf "$SANDBOX_REMOTE"
+    git init -q --bare "$SANDBOX_REMOTE" >/dev/null 2>&1
+    git remote add origin "$SANDBOX_REMOTE" >/dev/null 2>&1
 }
 
 # Teardown sandbox
 teardown_sandbox() {
     cd "$SCRIPT_DIR" || exit 1
-    rm -rf "$SANDBOX_DIR"
+    rm -rf "$SANDBOX_DIR" "$SANDBOX_REMOTE"
 }
 
 start_suite "Two-Tier Configuration, Cleanup Commands & Dry Run"
@@ -258,6 +278,15 @@ git() {
         echo "staging/1.0.0-rc-01"
         return 0
     elif [[ "$cmd" == "rev-parse" ]]; then
+        # Let repository-plumbing queries reach real git; only ref resolution
+        # is mocked. Answering "develop" to --show-toplevel would make the
+        # repository root literally "develop".
+        case "$1" in
+            --git-dir|--absolute-git-dir|--show-toplevel|--is-inside-work-tree)
+                command git rev-parse "$@"
+                return $?
+                ;;
+        esac
         echo "develop"
         return 0
     else

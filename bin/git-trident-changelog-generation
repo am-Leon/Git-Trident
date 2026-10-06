@@ -57,15 +57,16 @@ RELEASE_NOTES_FILENAME="RELEASE_NOTES.md"
 get_output_dir() {
     local platform="${1:-}"
 
+    # Anchored to the repository root: otherwise running the command from a
+    # subdirectory silently scattered release_notes/ trees around the project.
+    local dir
     if is_platform_specific_mode && [ -n "$platform" ]; then
-        local dir="release_notes/${platform}"
-        mkdir -p "$dir"
-        echo "$dir"
+        dir="$(gt_repo_path "release_notes/${platform}")"
     else
-        local dir="release_notes"
-        mkdir -p "$dir"
-        echo "$dir"
+        dir="$(gt_repo_path "release_notes")"
     fi
+    mkdir -p "$dir"
+    echo "$dir"
 }
 
 # =============================================================================

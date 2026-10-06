@@ -120,39 +120,94 @@ prune_staging_tags() {
     echo ""
 
     # 4. Confirm Deletion
-    if confirm_action "Delete these $count tags from LOCAL and REMOTE ($REMOTE)?"; then
-        log_info "🗑️  Deleting tags..."
-        
-        # Batch delete local
-        # xargs is safer for large numbers of tags
-        printf "%s\n" "${tags_to_delete[@]}" | xargs git tag -d >/dev/null 2>&1
-        log_info "✓ Deleted $count local tags"
-
-        # Batch delete remote
-        log_info "⏳ Deleting remote tags (this may take a moment)..."
-        # Git push --delete accepts multiple tags. We need to batch them to avoid command line length limits
-        # Batch size of 20 seems safe
-        local batch=()
-        for tag in "${tags_to_delete[@]}"; do
-            batch+=("$tag")
-            if [ "${#batch[@]}" -ge 20 ]; then
-                git push "$REMOTE" --delete "${batch[@]}" >/dev/null 2>&1
-                batch=()
-                echo -n "."
-            fi
-        done
-        # Process remaining
-        if [ "${#batch[@]}" -gt 0 ]; then
-            git push "$REMOTE" --delete "${batch[@]}" >/dev/null 2>&1
-        fi
-        echo ""
-        log_info "✓ Deleted remote tags"
-        
-        log_info "🎉 Cleanup complete!"
-        log_warn "📢 Tell your teammates to run: 'git trident cleanup sync'"
-    else
+    if ! confirm_action "Delete these $count tags from LOCAL and REMOTE ($REMOTE)?"; then
         log_info "Operation cancelled."
+        return 0
     fi
+
+    log_info "🗑️  Deleting tags..."
+
+    # --- Local deletion -----------------------------------------------------
+    # Delete one at a time and count real successes. The previous version piped
+    # everything through `xargs git tag -d >/dev/null 2>&1` and then logged
+    # "✓ Deleted $count local tags" unconditionally, so failures were invisible.
+    local deleted_local=0 failed_local=0 tag
+    for tag in ${tags_to_delete[@]+"${tags_to_delete[@]}"}; do
+        if git tag -d "$tag" >/dev/null 2>&1; then
+            deleted_local=$((deleted_local + 1))
+        else
+            failed_local=$((failed_local + 1))
+            log_warn "   ✗ Could not delete local tag: $tag"
+        fi
+    done
+
+    # --- Remote deletion ----------------------------------------------------
+    # Only submit tags that actually exist on the remote. `git push --delete`
+    # fails the WHOLE batch if any single ref is missing, so one stale entry
+    # used to silently abort deletion of the other nineteen.
+    log_info "⏳ Checking which tags exist on $REMOTE..."
+    local remote_tag_list
+    remote_tag_list=$(git ls-remote --tags "$REMOTE" 2>/dev/null | sed 's|.*refs/tags/||' | sed 's|\^{}$||' | sort -u)
+
+    if [ -z "$remote_tag_list" ]; then
+        log_warn "Could not read tags from $REMOTE — skipping remote deletion."
+        log_info "📝 Summary: $deleted_local local deleted, $failed_local failed, remote skipped"
+        return 1
+    fi
+
+    local to_delete_remote=() skipped_remote=0
+    for tag in ${tags_to_delete[@]+"${tags_to_delete[@]}"}; do
+        if printf '%s\n' "$remote_tag_list" | grep -qxF "$tag"; then
+            to_delete_remote+=("$tag")
+        else
+            skipped_remote=$((skipped_remote + 1))
+        fi
+    done
+
+    local deleted_remote=0 failed_remote=0
+    if [ "${#to_delete_remote[@]}" -gt 0 ]; then
+        log_info "⏳ Deleting ${#to_delete_remote[@]} remote tag(s)..."
+        local batch=()
+        _flush_batch() {
+            [ "${#batch[@]}" -eq 0 ] && return 0
+            if git push "$REMOTE" --delete ${batch[@]+"${batch[@]}"} >/dev/null 2>&1; then
+                deleted_remote=$((deleted_remote + ${#batch[@]}))
+            else
+                # Fall back to one-by-one so a single bad ref cannot hide the rest.
+                local t
+                for t in ${batch[@]+"${batch[@]}"}; do
+                    if git push "$REMOTE" --delete "$t" >/dev/null 2>&1; then
+                        deleted_remote=$((deleted_remote + 1))
+                    else
+                        failed_remote=$((failed_remote + 1))
+                        log_warn "   ✗ Could not delete remote tag: $t"
+                    fi
+                done
+            fi
+            batch=()
+        }
+        for tag in "${to_delete_remote[@]}"; do
+            batch+=("$tag")
+            if [ "${#batch[@]}" -ge 20 ]; then _flush_batch; fi
+        done
+        _flush_batch
+        unset -f _flush_batch
+    fi
+
+    # --- Honest summary -----------------------------------------------------
+    log_empty
+    log_info "📝 Cleanup summary:"
+    log_info "   • Local:  $deleted_local deleted, $failed_local failed"
+    log_info "   • Remote: $deleted_remote deleted, $failed_remote failed, $skipped_remote not present"
+
+    if [ "$failed_local" -gt 0 ] || [ "$failed_remote" -gt 0 ]; then
+        log_warn "⚠️  Cleanup completed with errors."
+        return 1
+    fi
+
+    log_info "🎉 Cleanup complete!"
+    log_warn "📢 Tell your teammates to run: 'git trident cleanup sync'"
+    return 0
 }
 
 sync_local_tags() {

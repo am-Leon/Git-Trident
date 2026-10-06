@@ -1180,13 +1180,31 @@ Items **not** absorbed by Phase 3:
 - [x] **P0-6** Removed `declare -A` + the Bash-4 shim; hardened 3 array expansions for `set -u` on 3.2 — **DONE**
 
 ### Phase 2 — P1
-- [ ] **P1-1** Repo-root resolution (implement via **A1b**) — **M**
-- [ ] **P1-2** `_ask_bool` honours `true` defaults — **S**
-- [ ] **P1-3** Unquote the cache glob; never cache a failed fetch — **S**
-- [ ] **P1-4** Invert the early returns; apply **A6** — **S**
-- [ ] **P1-5** Honest prune reporting; pre-filter remote tags — **M**
-- [ ] **P1-6** `version update`: pass `GT_INSTALL_ROOT` to the installer (via **A1a**) — **S**
-- [ ] **P1-7** `hooks enable/disable`: anchored grep, verify the write, route global-only keys to the global tier — **S**
+- [x] **P1-1** `GT_REPO_ROOT`/`GT_GIT_DIR` via **A1b**; all cwd- and `.git`-relative paths anchored; worktrees work — **DONE**
+- [x] **P1-2** `_ask_bool` returns the default verbatim on an empty answer — **DONE**
+- [x] **P1-3** Glob expanded by the shell; `ls-remote` status checked so a failed fetch is never cached — **DONE**
+- [x] **P1-4** Early returns inverted (2 sites); verified both directions — **DONE**
+- [x] **P1-5** Per-tag counts, remote pre-filter, batch falls back to one-by-one; honest summary + non-zero exit on failure — **DONE**
+- [x] **P1-6** `GT_INSTALL_ROOT` passed to the installer, so a custom install updates in place — **DONE**
+- [x] **P1-7** `gt_config_set_key` (anchored + verified) and `gt_config_file_for_key` (tier from `GLOBAL_ONLY_CONFIG_KEYS`) — **DONE**
+
+
+### Landed out-of-plan (Phase 2)
+
+- [x] **A1b** `lib/git-trident-context.sh` — `gt_resolve_repo_context`, `gt_repo_path`,
+  `gt_git_path`. Deliberately **not cached and not exported**: a child process could
+  inherit a root belonging to a different repository, and a shell that changed directory
+  would keep resolving against the old one.
+- [x] **P2-5** Verification reports moved out of `.git/` into a gitignored
+  `.git-trident-reports/` — they are user artifacts, and inside `.git` they were
+  invisible and lost on a fresh clone.
+- [x] **Test isolation fixed.** `tests/sandbox_test` sits INSIDE the Git Trident
+  checkout, so it was never a repository root and inherited this repo's own `origin`.
+  The config tests were therefore asserting the pre-P1-1 behaviour. The sandbox now
+  runs `git init` with its own bare remote. This was not cosmetic: during development
+  an intermediate run wrote `config_01`'s answers (`prod-main`/`stg-rc`/`dev-flow`) into
+  the real project root as `git-trident-config`. The suite could modify the user's
+  actual project; it no longer can.
 
 ### Phase 3 — Architecture
 - [x] **A1a** Preamble in 11 entry points; `discover_install_dir` simplified, GNU-only `readlink -f` eliminated — **DONE** _(remaining: thread `GT_INSTALL_ROOT` into `version update` (P1-6), `common.sh:252-253` and `help.sh:703` (P3-7))_

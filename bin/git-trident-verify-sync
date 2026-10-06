@@ -145,7 +145,11 @@ parse_arguments() {
 
 generate_sync_report() {
     local check_results=("$@")
-    local report_file=".git/git-trident-verification-report-$(date +%Y%m%d-%H%M%S).txt"
+    # Reports are user artifacts: keep them in the working tree (gitignored),
+    # not inside .git where they are invisible and lost on a fresh clone.
+    local report_dir; report_dir="$(gt_repo_path ".git-trident-reports")"
+    mkdir -p "$report_dir" 2>/dev/null
+    local report_file="$report_dir/verification-$(date +%Y%m%d-%H%M%S).txt"
 
     {
         echo "Git Trident Verification Report - $(date)"
@@ -451,7 +455,11 @@ check_deprecated_tags_for_platform() {
         if [ "$show_deprecated" = true ]; then
             [ "$silent" = false ] && log_info "    ✅ No production tags for $platform (no deprecated tags possible)"
         fi
-        return 0  # No deprecated tags possible
+        # Return 1 = "no deprecated tags found". This function reports a
+        # FINDING, not success: the caller treats 0 as "deprecated tags exist".
+        # Returning 0 here made a repository with no tags at all announce
+        # "Deprecated tags exist (use --deprecated to see details)".
+        return 1
     fi
 
     # Get the latest production tag for this platform
@@ -502,7 +510,8 @@ check_deprecated_tags_legacy() {
         if [ "$show_deprecated" = true ]; then
             [ "$silent" = false ] && log_info "  ✅ No production tags found (no deprecated tags possible)"
         fi
-        return 0  # No deprecated tags possible
+        # See the note in check_deprecated_tags_for_platform: 0 means "found".
+        return 1
     fi
 
     # Get the latest production tag

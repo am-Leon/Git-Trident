@@ -56,7 +56,19 @@ _ask_bool() {
     [[ "$default" == "true" ]] && hint="Y/n" || hint="y/N"
     local answer
     read -rp "$(echo -e "${BLUE}?${NC} $prompt [$hint]: ")" answer
-    answer="${answer:-$default}"
+
+    # An empty answer means "accept the default" — return it verbatim.
+    #
+    # This previously did:  answer="${answer:-$default}"
+    # which substituted the literal string "true", and "true" does not match
+    # ^[Yy] — so pressing Enter on a prompt displaying [Y/n] silently wrote
+    # false. An all-defaults `config init` produced HOOK_COMMIT_MSG_ENABLED=false
+    # and REQUIRE_CAPITAL_START=false.
+    if [[ -z "$answer" ]]; then
+        echo "$default"
+        return 0
+    fi
+
     [[ "$answer" =~ ^[Yy] ]] && echo "true" || echo "false"
 }
 
@@ -67,7 +79,16 @@ _write_line() { echo "$1" >> "$OUTPUT_FILE"; }
 # =============================================================================
 
 cmd_init() {
-    local OUTPUT_FILE="./git-trident-config"
+    # This command runs with --no-init, so the repository context has not been
+    # resolved yet. Resolve it here so `config init` from a subdirectory writes
+    # the config to the repository ROOT, where load_project_config looks for it.
+    if ! gt_resolve_repo_context; then
+        log_error "❌ Not inside a Git repository."
+        log_error "   Run 'git trident config init' from within your project."
+        exit 1
+    fi
+
+    local OUTPUT_FILE; OUTPUT_FILE="$(gt_repo_path "$CONFIG_FILE_NAME")"
 
     log_info "🛠  GIT TRIDENT — Project Config Init"
     log_info "========================================"
