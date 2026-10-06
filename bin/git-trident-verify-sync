@@ -70,6 +70,9 @@ parse_arguments() {
             "--brief"|"-b")
                 mode="brief"
                 ;;
+            "--json")
+                mode="json"
+                ;;
             "--report"|"-r")
                 generate_report=true
                 ;;
@@ -1510,6 +1513,76 @@ run_comprehensive_verification() {
 }
 
 # =============================================================================
+# JSON STATUS
+# =============================================================================
+
+# Machine-readable status on STDOUT. Logs still go to stderr, so
+# `git trident status --json 2>/dev/null | jq .` is clean.
+show_json_status() {
+    local prod_in_staging staging_in_develop synced
+    check_branch_sync_status "$PRODUCTION_BRANCH" "$STAGING_BRANCH" "subset" true \
+        && prod_in_staging=true || prod_in_staging=false
+    check_branch_sync_status "$STAGING_BRANCH" "$DEVELOP_BRANCH" "subset" true \
+        && staging_in_develop=true || staging_in_develop=false
+    if [ "$prod_in_staging" = true ] && [ "$staging_in_develop" = true ]; then
+        synced=true
+    else
+        synced=false
+    fi
+
+    local mode_name="legacy"
+    is_platform_specific_mode && mode_name="platform"
+
+    local prod_tags staging_tags prod_count staging_count latest_prod
+    prod_tags="$(git tag -l "${PRODUCTION_TAG_PREFIX}*" 2>/dev/null)"
+    staging_tags="$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)"
+    prod_count="$(count_lines "$prod_tags")"
+    staging_count="$(count_lines "$staging_tags")"
+    latest_prod="$(get_latest_production_tag)"
+
+    local temp_branches temp_count
+    temp_branches="$(git for-each-ref --format='%(refname:short)' \
+        'refs/heads/temp-rebase-*' 'refs/heads/temp-propagate-*' 2>/dev/null)"
+    temp_count="$(count_lines "$temp_branches")"
+
+    local platforms_json="[]"
+    if is_platform_specific_mode; then
+        # shellcheck disable=SC2086  # intentional split of a space-separated list
+        platforms_json="$(gt_json_array $PLATFORMS)"
+    fi
+
+    local temps_json="[]"
+    if [ "$temp_count" -gt 0 ]; then
+        local -a tarr=()
+        while IFS= read -r t; do [ -n "$t" ] && tarr+=("$t"); done <<< "$temp_branches"
+        temps_json="$(gt_json_array ${tarr[@]+"${tarr[@]}"})"
+    fi
+
+    printf '{\n'
+    gt_json_field  "version"             "$TRIDENT_VERSION"
+    gt_json_field  "mode"                "$mode_name"
+    gt_json_raw    "platforms"           "$platforms_json"
+    gt_json_field  "repository"          "$GT_REPO_ROOT"
+    gt_json_field  "current_branch"      "$(get_current_branch)"
+    gt_json_raw    "branches"            "{
+    \"production\": \"$(gt_json_escape "$PRODUCTION_BRANCH")\",
+    \"staging\": \"$(gt_json_escape "$STAGING_BRANCH")\",
+    \"develop\": \"$(gt_json_escape "$DEVELOP_BRANCH")\"
+  }"
+    gt_json_raw    "synchronized"        "$synced"
+    gt_json_raw    "production_in_staging" "$prod_in_staging"
+    gt_json_raw    "staging_in_develop"  "$staging_in_develop"
+    gt_json_raw    "production_tags"     "$prod_count"
+    gt_json_raw    "staging_tags"        "$staging_count"
+    gt_json_field  "latest_production"   "${latest_prod:-}"
+    gt_json_raw    "orphaned_temp_branches" "$temps_json"
+    gt_json_raw    "merge_in_progress"   "$([ -f "$(gt_git_path MERGE_HEAD)" ] && echo true || echo false)" last
+    printf '}\n'
+
+    [ "$synced" = true ]
+}
+
+# =============================================================================
 # BRIEF STATUS (QUICK CHECK)
 # =============================================================================
 
@@ -1606,6 +1679,9 @@ main() {
     case "$mode" in
         "brief")
             show_brief_status
+            ;;
+        "json")
+            show_json_status
             ;;
         "branches")
             check_all_branch_sync false

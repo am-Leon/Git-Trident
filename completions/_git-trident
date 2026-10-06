@@ -1,0 +1,93 @@
+#compdef git-trident
+# Git Trident — zsh completion
+#
+# Install: put this file on your $fpath, e.g.
+#   mkdir -p ~/.zfunc && cp _git-trident ~/.zfunc/
+#   echo 'fpath=(~/.zfunc $fpath); autoload -Uz compinit; compinit' >> ~/.zshrc
+
+_git_trident_versions() {
+    local prefix="staging/" suffix="-rc-"
+    git tag -l "${prefix}*" 2>/dev/null \
+        | sed "s|^${prefix}||" \
+        | sed "s|${suffix}[0-9]*$||" \
+        | sort -u
+}
+
+_git_trident_platforms() {
+    local root cfg
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || return
+    cfg="$root/git-trident-config"
+    [[ -f $cfg ]] || cfg="$root/.git-trident-config"
+    [[ -f $cfg ]] || return
+    sed -n 's/^[[:space:]]*PLATFORMS=["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' "$cfg" | head -1
+}
+
+_git-trident() {
+    local -a top
+    top=(
+        'production:Production release and hotfix flows'
+        'staging:Staging release, hotfix, sync-tags and changelog'
+        'status:Quick synchronisation status'
+        'verify-sync:In-depth verification of branches and tags'
+        'push-all:Push branches and tags to the remote'
+        'cleanup:Prune deprecated tags, orphaned branches, sync refs'
+        'config:Initialise, show or validate configuration'
+        'hooks:Install and configure git hooks'
+        'version:Version, health, environment, update'
+        'doctor:Diagnose environment, install, config and repository'
+        'abort:Unwind a partially-completed release or hotfix'
+        'tags:List tags for an environment'
+        'help:Show help'
+    )
+
+    _arguments -C \
+        '(--yes -y)'{--yes,-y}'[Never prompt for confirmation]' \
+        '--no-color[Disable coloured output]' \
+        '--debug[Verbose diagnostics]' \
+        '(--help -h)'{--help,-h}'[Show help]' \
+        '1: :->cmd' \
+        '*:: :->args' && return 0
+
+    case $state in
+        cmd) _describe -t commands 'git trident command' top ;;
+        args)
+            case $words[1] in
+                production|staging)
+                    if (( CURRENT == 2 )); then
+                        _values 'subcommand' release hotfix changelog sync-tags
+                    elif (( CURRENT == 3 )); then
+                        case $words[2] in
+                            release|hotfix) _values 'action' start finish ;;
+                            changelog|sync-tags) _values 'version' $(_git_trident_versions) ;;
+                        esac
+                    elif (( CURRENT == 4 )); then
+                        if [[ $words[1] == production && $words[2] == hotfix && $words[3] == start ]]; then
+                            _values 'platform' ${=$(_git_trident_platforms)}
+                        else
+                            _values 'version' $(_git_trident_versions)
+                        fi
+                    fi
+                    ;;
+                config)      _values 'subcommand' init show validate help ;;
+                hooks)       _values 'subcommand' install-local install-global uninstall-local uninstall-global enable disable status ;;
+                cleanup)
+                    if (( CURRENT == 2 )); then _values 'subcommand' prune sync
+                    else
+                        case $words[2] in
+                            prune) _values 'target' tags temp ;;
+                            sync)  _values 'target' tags branches ;;
+                        esac
+                    fi
+                    ;;
+                version)     _values 'subcommand' check update env config health ;;
+                tags)        _values 'environment' staging production ;;
+                status)      _values 'option' --json ;;
+                abort)       _values 'option' --dry-run ;;
+                verify-sync) _values 'option' --brief --json --report --deprecated --platform --env ;;
+                push-all)    _values 'option' --platform $(git remote 2>/dev/null) ;;
+            esac
+            ;;
+    esac
+}
+
+_git-trident "$@"

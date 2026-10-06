@@ -867,6 +867,50 @@ assert_clean_working_tree() {
 }
 
 # =============================================================================
+# JSON OUTPUT
+# =============================================================================
+#
+# Machine-readable output for scripting and CI. This is only usable because logs
+# go to stderr (A10): JSON on stdout would otherwise be interleaved with log
+# lines and unparseable.
+#
+# Escaping covers what can actually appear in a branch name, tag name or path:
+# backslash, double quote, tab and carriage return. Newlines cannot appear in a
+# git ref name, and are stripped defensively rather than encoded.
+
+gt_json_escape() {
+    printf '%s' "$1" \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+        | tr '\t' ' ' | tr -d '\r\n'
+}
+
+# gt_json_field <name> <value> [last]
+# Emits  "name": "value",   (or without the comma when `last` is given)
+gt_json_field() {
+    local sep=","
+    [ -n "${3:-}" ] && sep=""
+    printf '  "%s": "%s"%s\n' "$1" "$(gt_json_escape "$2")" "$sep"
+}
+
+# gt_json_raw <name> <raw> [last] — for numbers, booleans and nested values
+gt_json_raw() {
+    local sep=","
+    [ -n "${3:-}" ] && sep=""
+    printf '  "%s": %s%s\n' "$1" "$2" "$sep"
+}
+
+# gt_json_array <item...> — a JSON array of strings on one line
+gt_json_array() {
+    local out="[" first=true item
+    for item in "$@"; do
+        [ -z "$item" ] && continue
+        if [ "$first" = true ]; then first=false; else out="$out,"; fi
+        out="$out\"$(gt_json_escape "$item")\""
+    done
+    printf '%s]' "$out]" | sed 's/]]$/]/'
+}
+
+# =============================================================================
 # GIT COMMAND WRAPPER
 # =============================================================================
 

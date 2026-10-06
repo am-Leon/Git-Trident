@@ -230,6 +230,15 @@ show_post_install_instructions() {
     log_info "⚙️  Global config:    $global_config"
 
     log_empty
+    if [[ -d "$INSTALL_DIR/completions" ]]; then
+        log_empty
+        log_info "⌨️  SHELL COMPLETION (optional)"
+        log_info "=========================================="
+        log_info "• bash:  echo 'source $INSTALL_DIR/completions/git-trident.bash' >> ~/.bashrc"
+        log_info "• zsh :  mkdir -p ~/.zfunc && cp $INSTALL_DIR/completions/_git-trident ~/.zfunc/"
+        log_info "         then ensure ~/.zshrc has: fpath=(~/.zfunc \$fpath); autoload -Uz compinit; compinit"
+    fi
+
     log_info "🔧 NEXT STEPS"
     log_info "=========================================="
     log_info "• Inside any Git project, initialize Git Trident:"
@@ -284,11 +293,15 @@ run_install() {
     fi
 
     # 2. Deploy Files
-    mkdir -p "$INSTALL_DIR"/{bin,lib,templates,docs,hooks}
+    mkdir -p "$INSTALL_DIR"/{bin,lib,templates,docs,hooks,completions}
     cp -r "$SCRIPT_DIR"/bin/* "$INSTALL_DIR/bin/"
     cp -r "$SCRIPT_DIR"/lib/* "$INSTALL_DIR/lib/"
     [[ -d "$SCRIPT_DIR/templates" ]] && cp -r "$SCRIPT_DIR/templates"/* "$INSTALL_DIR/templates/"
     [[ -d "$SCRIPT_DIR/hooks" ]] && cp -r "$SCRIPT_DIR/hooks"/* "$INSTALL_DIR/hooks/"
+    # docs/ and completions/ are packaged by build.sh; the directories were
+    # being created and then left empty.
+    [[ -d "$SCRIPT_DIR/docs" ]] && cp -r "$SCRIPT_DIR/docs"/* "$INSTALL_DIR/docs/" 2>/dev/null
+    [[ -d "$SCRIPT_DIR/completions" ]] && cp -r "$SCRIPT_DIR/completions"/* "$INSTALL_DIR/completions/" 2>/dev/null
     chmod +x "$INSTALL_DIR"/bin/*
     if [[ -d "$INSTALL_DIR/hooks" ]] && ls "$INSTALL_DIR/hooks"/* >/dev/null 2>&1; then
         chmod +x "$INSTALL_DIR"/hooks/*

@@ -560,6 +560,11 @@ handle_verify_sync() {
 }
 
 handle_status() {
+    # `status --json` is the machine-readable form of the same report.
+    local arg
+    for arg in "$@"; do
+        [ "$arg" = "--json" ] && { execute_script "git-trident-verify-sync" "--json"; return; }
+    done
     execute_script "git-trident-verify-sync" "--brief"
 }
 

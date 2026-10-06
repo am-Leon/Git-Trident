@@ -1135,13 +1135,13 @@ Items **not** absorbed by Phase 3:
 
 | ID  | Enhancement                                            | Rationale                                                                                              | Size |
 |-----|--------------------------------------------------------|--------------------------------------------------------------------------------------------------------|------|
-| E1  | `--json` on `status`, `verify-sync`, `tags`, `version` | Makes the tool scriptable; depends on **A10**                                                          | M    |
+| ~~E1~~ | `--json` on `status`, `verify-sync`, `tags`, `version` | **DONE — `status --json` / `verify-sync --json`: 14 fields on stdout, logs on stderr, verified to parse** | M |
 | E2  | `--dry-run` on every mutating command                  | Only `sync-tags` has it today; the highest-risk commands (`release finish`, `hotfix finish`) have none | M    |
 | ~~E3~~ | `git trident doctor` | **DONE — five layers in dependency order; stops once an upstream layer is broken; also detects orphaned temp branches, a merge in progress, and stale locks** | S |
 | ~~E4~~ | `git trident abort` | **DONE — reports the exact state, then undoes only LOCAL, UNPUSHED refs; `--dry-run` reports and stops** | M |
 | ~~E5~~ | Global `--yes` / `--non-interactive` | **DONE — consumed by the dispatcher and exported so it survives `exec`; `force_confirm_action` deliberately NOT silenced** | S |
 | ~~E6~~ | `--no-color` + `NO_COLOR` env support | **DONE — `--no-color`, `NO_COLOR`, `GT_COLOR=never/always/auto`; decided by **stderr**, which is where logs actually go (it tested stdout before)** | S |
-| E7  | Bash/zsh completions                                   | Large command surface, deeply nested subcommands                                                       | M    |
+| ~~E7~~ | Bash/zsh completions | **DONE — bash and zsh completions, packaged by build.sh and installed; completes versions and platforms from the repo** | M |
 | ~~E8~~ | `CONFIG_SCHEMA_VERSION` key | **DONE — in the template, with `CONFIG_SCHEMA_CURRENT`; reported by `config validate` and `doctor`** | S |
 | ~~E9~~ | `git trident config validate` | **DONE — required keys, branch existence, remote, platform classification, schema version; loads through the real loader** | S |
 | E10 | `git trident config migrate`                           | Rewrite configs when keys are renamed/moved between tiers                                              | M    |
