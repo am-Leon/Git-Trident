@@ -700,8 +700,8 @@ NOTE: Global-only keys found in a project config are IGNORED with a warning.
       Move them to ~/.git-trident-config.
 
 Quick setup for a new project:
-  cp ~/.git-trident-global-config ./git-trident-config
-  # Edit branch names, tag prefixes, platform settings...
+  git trident config init
+  # Answer the prompts: branch names, tag prefixes, platform settings...
   git add git-trident-config
   git commit -m "cmd: Add git-trident project config"
 

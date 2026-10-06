@@ -398,8 +398,11 @@ load_project_config() {
             log_error "   - Global (machine) : ~/$GLOBAL_CONFIG_FILE_NAME  (installed automatically)"
             log_empty ""
             log_error "📝 Re-run the installer, or copy the templates manually:"
-            log_error "   Global  : cp \"\$HOME/$PROJECT_DIR_NAME/templates/git-trident-global-config\" ~/$GLOBAL_CONFIG_FILE_NAME"
-            log_error "   Project : cp \"\$HOME/$PROJECT_DIR_NAME/templates/git-trident-config\" ./$CONFIG_FILE_NAME"
+            # Derived from where this installation actually lives, not assumed
+            # to be $HOME/.git-trident — install.sh accepts a custom path.
+            local _tpl="${GT_INSTALL_ROOT:-$HOME/$PROJECT_DIR_NAME}/templates"
+            log_error "   Global  : cp \"$_tpl/git-trident-global-config\" ~/$GLOBAL_CONFIG_FILE_NAME"
+            log_error "   Project : cp \"$_tpl/git-trident-config\" ./$CONFIG_FILE_NAME"
         fi
         return 1
     fi

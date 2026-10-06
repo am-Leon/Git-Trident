@@ -598,6 +598,20 @@ main() {
 # Handle script termination
 handle_exit() {
     local exit_code=$?
+
+    # Remove a temporary branch left behind by an interrupted propagation.
+    # These are created from an existing RC tag, merged into, tagged, and then
+    # deleted; a kill between those steps used to orphan them, and the next run
+    # then failed because `git checkout -b` cannot recreate an existing branch.
+    if [ -n "${GT_TEMP_BRANCH:-}" ]; then
+        if git show-ref --verify --quiet "refs/heads/$GT_TEMP_BRANCH"; then
+            log_warn "Cleaning up temporary branch: $GT_TEMP_BRANCH"
+            git checkout -q "$STAGING_BRANCH" >/dev/null 2>&1
+            git branch -D "$GT_TEMP_BRANCH" >/dev/null 2>&1
+        fi
+        GT_TEMP_BRANCH=""
+    fi
+
     if [ $exit_code -ne 0 ]; then
         log_error "Script terminated with errors"
     fi

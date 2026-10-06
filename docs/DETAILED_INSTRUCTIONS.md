@@ -60,7 +60,7 @@ Running `git trident staging release start <version>`:
 1. Validates that the version format is correct (`MAJOR.MINOR.PATCH`).
 2. Confirms that no previous Release Candidate tags or branches exist for this version.
 3. Checks out the `develop` branch (or a specified commit) and pulls updates.
-4. Creates a new release branch named `release/staging/<version>`.
+4. Creates a new release branch named `release/stg/<version>`.
 
 *Note: The command only checks out the new branch. No git tags or release candidates are created at this stage.*
 
@@ -68,7 +68,7 @@ Running `git trident staging release start <version>`:
 
 If the QA team identifies a bug in the project build output, a staging hotfix is executed:
 
-1. `git trident staging hotfix start <version>` checks out a branch `hotfix/staging/<version>` stemming from the latest
+1. `git trident staging hotfix start <version>` checks out a branch `hotfix/stg/<version>` stemming from the latest
    RC tag (e.g. `staging/1.0.0-rc-01`).
 2. The developer makes changes, updates version or QA notes, and commits the fixes.
 3. Running `git trident staging hotfix finish <version>` creates the next increment tag (`staging/1.0.0-rc-02`), merges
@@ -96,7 +96,7 @@ Production releases promote validated staging releases to the live environment.
 [ staging/1.0.0-rc-02 ] (Latest RC Tag)
           │
           ▼ (production release start)
-[ release/prod-1.0.0 ] (Release Branch)
+[ release/prod/1.0.0 ] (Release Branch)
           │
           ▼ (production release finish)
 [ production ] (Merge & Tag production/1.0.0)
@@ -109,7 +109,7 @@ Production releases promote validated staging releases to the live environment.
 #### Promoting Staging to Production
 
 1. **Start**: Running `git trident production release start 1.0.0` looks up the highest staging RC tag (e.g.,
-   `staging/1.0.0-rc-02`) and checks out a temporary release branch `release/prod-1.0.0` from that tag.
+   `staging/1.0.0-rc-02`) and checks out a temporary release branch `release/prod/1.0.0` from that tag.
 2. **Finish**: Running `git trident production release finish 1.0.0` merges the temporary release branch into the
    `production` branch, creates the immutable tag `production/1.0.0`, and deletes the release branch.
 3. **Upstream Sync**: It automatically propagates the production release commits back to both the `staging` and

@@ -1271,7 +1271,40 @@ Items **not** absorbed by Phase 3:
   different parameter orders.
 
 ### Phase 4 — Remainder
-- [ ] **P2-1 … P2-7**, **P3-1 … P3-7** (table in §7)
+- [x] **P2-1** push once, read git's status (done in the A9 commit)
+- [x] **P2-2** `git for-each-ref` instead of parsing `git branch -vv` — no more literal `*` branch
+- [x] **P2-3** `GT_TEMP_BRANCH` + exit-handler cleanup, plus `git trident cleanup prune temp`
+- [x] **P2-4** distinct exit codes (0 ok / 1 action needed / 2 could not check) + 3 call sites
+- [x] **P2-5** reports moved to a gitignored `.git-trident-reports/` (done with A1b)
+- [x] **P2-6** GNU-only `readlink -f` eliminated (done with A1a)
+- [x] **P2-7** symlink-resolving preamble (done with A1a)
+- [x] **P3-1** README / QUICK_START / DETAILED_INSTRUCTIONS branch prefixes corrected
+- [x] **P3-2** CONTRIBUTING.md: floor is Bash 3.2, no brew; Bash 3.2 cookbook added (**T0.6**)
+- [x] **P3-3** trailing newline on `templates/git-trident-config`
+- [ ] **P3-4** dogfood a project config — **deferred, needs a decision** (see below)
+- [x] **P3-5** all 54 registry IDs linked to their asserting suite; e2e and guard sections added
+- [x] **P3-6** README documents the real hooks subcommands
+- [x] **P3-7** install paths derived from `GT_INSTALL_ROOT`; help no longer references a file that never exists
+
+
+### P3-4 — deferred, needs a decision
+
+Adding a `git-trident-config` to this repository is not a code fix; it is a choice about
+how the project itself is branched. Git Trident requires three branches, and this repo has
+only `main` and `develop` — there is no `staging`. Adopting the tool's own model would mean
+creating a `staging` branch and routing releases through it, which changes how the
+maintainers work and is not mine to decide.
+
+Two coherent options:
+
+1. **Dogfood it.** Create `staging`, add `git-trident-config` with
+   `PRODUCTION_BRANCH="main"`, `STAGING_BRANCH="staging"`, `DEVELOP_BRANCH="develop"`, and
+   release Git Trident with Git Trident. Best possible test of the tool, and the CI
+   branch triggers would follow from it.
+2. **Say so explicitly.** Keep `main` + `develop` and note in CONTRIBUTING.md that the tool
+   is not used on its own repository, so nobody reads the absence as an oversight.
+
+Either is defensible; drifting between them is not.
 
 ### Phase 5 — Enhancements
 - [ ] **E1 … E11** (table in §8)

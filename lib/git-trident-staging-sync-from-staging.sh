@@ -105,6 +105,14 @@ create_propagation_temp_branch() {
     local temp_branch="temp-propagate-${base_version//[^a-zA-Z0-9_-]/-}"
 
     # Create temp branch from the existing RC (not from staging branch)
+    # Record it globally so an interrupted run can clean it up. Without this a
+    # killed or failed sync leaves orphan temp-* branches behind, and the next
+    # run fails because `git checkout -b` cannot recreate an existing branch.
+    # Read by handle_exit in bin/git-trident-staging-sync-tags; static analysis
+    # cannot follow that across the source boundary.
+    # shellcheck disable=SC2034
+    GT_TEMP_BRANCH="$temp_branch"
+
     verify_step "Creating temporary branch from existing RC: $latest_rc_tag" \
         "git checkout -b '$temp_branch' '$latest_rc_tag'" \
         "On temporary branch: $temp_branch (from $latest_rc_tag)"
@@ -218,6 +226,8 @@ propagate_to_single_version() {
             # Clean up temp branch on failure
             git checkout "$STAGING_BRANCH" >/dev/null 2>&1
             git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
             return 1
         fi
 
@@ -228,6 +238,8 @@ propagate_to_single_version() {
         # Clean up temp branch
         git checkout "$STAGING_BRANCH" >/dev/null 2>&1
         git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
     fi
 
     # Update staging branch with the new tag

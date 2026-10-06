@@ -893,13 +893,14 @@ check_production_sync_status() {
     local latest_production; latest_production=$(get_latest_production_tag "$platform_filter")
     if [ -n "$latest_production" ]; then
         source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-production.sh"
-        if ! check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1; then
-            log_info "  • ⚠️  Staging RCs predate production $latest_production"
-            log_info "       Run: git trident staging sync-tags $latest_production --dry-run"
-            ok=false
-        else
-            log_info "  • ✅ Staging RCs include production $latest_production"
-        fi
+        check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1
+        case $? in
+            0) log_info "  • ✅ Staging RCs include production $latest_production" ;;
+            1) log_info "  • ⚠️  Staging RCs predate production $latest_production"
+               log_info "       Run: git trident staging sync-tags $latest_production --dry-run"
+               ok=false ;;
+            *) log_info "  • ℹ️  Could not check rebase status for $latest_production" ;;
+        esac
     fi
 
     log_empty ""
@@ -1306,13 +1307,14 @@ check_sync_for_platform() {
         # Check if staging releases need rebase after this production release
         source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-production.sh"
 
-        if ! check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1; then
-            [ "$silent" = false ] && log_info "    ⚠️  Staging releases may need rebase after production $latest_production"
-            [ "$silent" = false ] && log_info "       Run: git trident staging sync-tags $latest_production --dry-run"
-            platform_synced=false
-        else
-            [ "$silent" = false ] && log_info "    ✅ Production $latest_production synced to staging"
-        fi
+        check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1
+        case $? in
+            0) [ "$silent" = false ] && log_info "    ✅ Production $latest_production synced to staging" ;;
+            1) [ "$silent" = false ] && log_info "    ⚠️  Staging releases need rebase after production $latest_production"
+               [ "$silent" = false ] && log_info "       Run: git trident staging sync-tags $latest_production --dry-run"
+               platform_synced=false ;;
+            *) [ "$silent" = false ] && log_info "    ℹ️  Could not check rebase status for $latest_production" ;;
+        esac
     else
         [ "$silent" = false ] && log_info "    📭 No production releases for $platform"
     fi
@@ -1361,13 +1363,14 @@ check_sync_legacy() {
         # Check if staging releases need rebase after this production release
         source "$SCRIPT_DIR/../lib/git-trident-staging-sync-from-production.sh"
 
-        if ! check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1; then
-            [ "$silent" = false ] && log_info "⚠️  Staging releases may need rebase after production $latest_production"
-            [ "$silent" = false ] && log_info "   Run: git trident staging sync-tags $latest_production --dry-run"
-            all_synced=false
-        else
-            [ "$silent" = false ] && log_info "✅ Production $latest_production synced to staging"
-        fi
+        check_staging_releases_need_rebase "$latest_production" >/dev/null 2>&1
+        case $? in
+            0) [ "$silent" = false ] && log_info "✅ Production $latest_production synced to staging" ;;
+            1) [ "$silent" = false ] && log_info "⚠️  Staging releases need rebase after production $latest_production"
+               [ "$silent" = false ] && log_info "   Run: git trident staging sync-tags $latest_production --dry-run"
+               all_synced=false ;;
+            *) [ "$silent" = false ] && log_info "ℹ️  Could not check rebase status for $latest_production" ;;
+        esac
     else
         [ "$silent" = false ] && log_info "📭 No production releases"
     fi

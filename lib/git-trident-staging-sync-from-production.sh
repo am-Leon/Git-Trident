@@ -171,6 +171,14 @@ create_rebase_temp_branch() {
     # Create temp branch from the outdated RC tag (not from staging branch)
     local temp_branch="temp-rebase-${base_version//[^a-zA-Z0-9_-]/-}"
 
+    # Record it globally so an interrupted run can clean it up. Without this a
+    # killed or failed sync leaves orphan temp-* branches behind, and the next
+    # run fails because `git checkout -b` cannot recreate an existing branch.
+    # Read by handle_exit in bin/git-trident-staging-sync-tags; static analysis
+    # cannot follow that across the source boundary.
+    # shellcheck disable=SC2034
+    GT_TEMP_BRANCH="$temp_branch"
+
     verify_step "Creating temporary branch from outdated RC: $latest_rc_tag" \
         "git checkout -b '$temp_branch' '$latest_rc_tag'" \
         "On temporary branch: $temp_branch (from $latest_rc_tag)"
@@ -293,6 +301,8 @@ process_single_staging_version() {
             # Clean up temp branch on failure
             git checkout "$STAGING_BRANCH" >/dev/null 2>&1
             git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
             return 1
         fi
 
@@ -300,6 +310,8 @@ process_single_staging_version() {
         if ! verify_production_changes_included "$temp_branch" "$production_commit"; then
             git checkout "$STAGING_BRANCH" >/dev/null 2>&1
             git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
             return 1
         fi
 
@@ -309,6 +321,8 @@ process_single_staging_version() {
         # Clean up temp branch
         git checkout "$STAGING_BRANCH" >/dev/null 2>&1
         git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
     fi
 
     # Update staging branch with the new tag
@@ -615,6 +629,14 @@ show_detection_summary() {
     fi
 }
 
+# Exit codes:
+#   0  everything is up to date, nothing to do
+#   1  one or more staging releases need rebasing
+#   2  the check could not be performed (bad or deprecated production tag)
+#
+# 1 and 2 used to be the same value, so a caller could not tell "work needed"
+# from "I could not look". verify-sync consequently reported "Staging releases
+# may need rebase" whenever the production tag was simply unusable.
 check_staging_releases_need_rebase() {
     local production_version="$1"
     local production_tag="${PRODUCTION_TAG_PREFIX}${production_version}"
@@ -623,7 +645,7 @@ check_staging_releases_need_rebase() {
 
     # Validate prerequisites
     if ! validate_production_sync_prerequisites "$production_version"; then
-        return 1
+        return 2
     fi
 
     # Get ALL staging tags that should receive production changes (based on platform rules)

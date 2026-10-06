@@ -43,7 +43,7 @@ thoroughly QA'ed, and safely released.
                   │                              ├─────────────────────────┐
                   │                              │                         │ (3) Production Release Start
                   ▼                              ▼                         ▼
-             [ Develop ]◄─────────────────[ Staging ]◄───────────────[ release/prod-1.0.0 ]
+             [ Develop ]◄─────────────────[ Staging ]◄───────────────[ release/prod/1.0.0 ]
                                                                            │
                                                                            │ (4) Production Release Finish
                                                                            ▼
@@ -52,7 +52,7 @@ thoroughly QA'ed, and safely released.
 
 1. **Feature Development**: Done entirely on branches stemming from and merging into `develop`.
 2. **Staging Preparation**: Code from `develop` is branched into a staging release candidate branch (
-   `release/staging/<version>`) where version codes, metadata, and QA notes are finalized.
+   `release/stg/<version>`) where version codes, metadata, and QA notes are finalized.
 3. **Staging Release**: Completing the release branch merges the code into `staging`, creates a staging release
    candidate tag (e.g., `1.0.0-rc-01`), and syncs the changes to `develop`. The developer builds this tag and shares the
    build output (the artifact) with QA. QA tests the final build output.
@@ -145,7 +145,7 @@ When you are ready to prepare a new release `1.0.0`, run:
 git trident staging release start 1.0.0
 ```
 
-- **Why**: This creates a release branch (`release/staging/1.0.0`) from the latest commit on `develop`, allowing you to
+- **Why**: This creates a release branch (`release/stg/1.0.0`) from the latest commit on `develop`, allowing you to
   lock down the code and make final adjustments (version codes, build metadata, QA notes) while work continues on the
   `develop` branch.
 
@@ -158,7 +158,7 @@ test candidate:
 git trident staging release finish 1.0.0
 ```
 
-- **Why**: This merges `release/staging/1.0.0` into the `staging` branch, tags it with the first candidate (
+- **Why**: This merges `release/stg/1.0.0` into the `staging` branch, tags it with the first candidate (
   `staging/1.0.0-rc-01`), deletes the release branch, and syncs changes back to `develop`.
 - **Next Step**: Build your project from the generated tag `staging/1.0.0-rc-01`, and share the final build output (the
   artifact) with your QA team for testing.
