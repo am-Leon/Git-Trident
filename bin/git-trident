@@ -45,9 +45,34 @@ for _arg in "$@"; do
     esac
 done
 
+# ---------------------------------------------------------------------------
+# Global flags, consumed here and REMOVED from the argument list
+# ---------------------------------------------------------------------------
+# These apply to every subcommand, so handling them per-subcommand would mean
+# teaching each argument parser about them. They are stripped before dispatch
+# because the subcommand parsers reject unknown options.
+#
+#   --yes / -y / --non-interactive   never prompt
+#   --no-color                       disable colour (also honours NO_COLOR)
+#   --debug                          verbose diagnostics
+#
+# Exported so they survive the `exec` into a subcommand. These are
+# per-invocation runtime flags, not configuration — configuration deliberately
+# does NOT travel through the environment.
+GT_FILTERED_ARGS=()
+for _arg in "$@"; do
+    case "$_arg" in
+        --yes|-y|--non-interactive) export GT_ASSUME_YES=true ;;
+        --no-color|--no-colour)     export GT_COLOR=never ;;
+        --debug)                    export DEBUG=true ;;
+        *) GT_FILTERED_ARGS+=("$_arg") ;;
+    esac
+done
+set -- ${GT_FILTERED_ARGS[@]+"${GT_FILTERED_ARGS[@]}"}
+
 # Source common utilities - skip auto-init for help and for utility commands that
 # legitimately run outside a repository.
-if [[ "$GT_WANTS_HELP" == "true" ]] || [[ "${1:-}" =~ ^(help|--help|-h|version|config|hooks|uninstall)$ ]]; then
+if [[ "$GT_WANTS_HELP" == "true" ]] || [[ "${1:-}" =~ ^(help|--help|-h|version|config|hooks|uninstall|doctor)$ ]]; then
     source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
 else
     source "$SCRIPT_DIR/../lib/git-trident-common.sh"
@@ -576,6 +601,10 @@ handle_config() {
     execute_script "git-trident-config" "$@"
 }
 
+handle_doctor() {
+    execute_script "git-trident-doctor" "$@"
+}
+
 handle_uninstall() {
     execute_script "git-trident-uninstall" "$@"
 }
@@ -619,6 +648,9 @@ dispatch_utility_command() {
             ;;
         "config")
             handle_config "${args[@]}"
+            ;;
+        "doctor")
+            handle_doctor "${args[@]}"
             ;;
 
         "help"|"--help"|-h)
@@ -692,7 +724,7 @@ main() {
         "uninstall")
             handle_uninstall "${remaining_args[@]}"
             ;;
-        "push-all"|"verify-sync"|"status"|"tags"|"version"|"help"|"cleanup"|"hooks"|"config")
+        "push-all"|"verify-sync"|"status"|"tags"|"version"|"help"|"cleanup"|"hooks"|"config"|"doctor")
             dispatch_utility_command "$namespace" "${remaining_args[@]}"
             ;;
         *)

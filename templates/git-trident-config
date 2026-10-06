@@ -18,6 +18,10 @@
 # REQUIRED — BRANCH NAMES
 # =============================================================================
 
+# Schema version of this file. Leave it alone unless a release note says
+# otherwise; `git trident config validate` warns when it is behind.
+CONFIG_SCHEMA_VERSION="1"
+
 PRODUCTION_BRANCH="production"
 STAGING_BRANCH="staging"
 DEVELOP_BRANCH="develop"

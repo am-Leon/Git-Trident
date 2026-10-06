@@ -171,12 +171,13 @@ and `staging`.
 |                | `git trident production hotfix start [platform]`                         | Start a critical hotfix branch directly from production        |
 |                | `git trident production hotfix finish`                                   | Finish production hotfix and sync changes back                 |
 |                | `git trident production changelog [version]`                             | Generate public release notes                                  |
-| **Utility**    | `git trident status`                                                     | Check sync status, branch differences, and environment tags    |
+| **Utility**    | `git trident doctor`                              | Diagnose environment, installation, configuration and repository |
+|                | `git trident status`                                                     | Check sync status, branch differences, and environment tags    |
 |                | `git trident verify-sync`                                                | In-depth verification of branches/tags sync                    |
 |                | `git trident push-all [remote]`                                          | Push all local staging/production/develop updates & tags       |
 |                | `git trident cleanup prune`                                              | Delete deprecated RC tags from local and remote                |
 |                | `git trident cleanup sync [tags/branches]`                               | Re-sync local git references from remote                       |
-|                | `git trident config [init/show]`                                         | Initialize or inspect current two-tier configuration           |
+|                | `git trident config [init/show/validate]`                                         | Initialize, inspect or validate the two-tier configuration           |
 |                | `git trident hooks [install-local/install-global/enable/disable/status]` | Install/configure Git Trident git hooks                        |
 |                | `git trident version [health/env]`                                       | Show tool version, system health check, and environment        |
 |                | `git trident version [check/update]`                                     | Check for updates or upgrade Git Trident to the latest version |

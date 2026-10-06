@@ -63,7 +63,8 @@ Core Workflow Commands:
   staging changelog <version>           Generate developer changelog
 
 Utility Commands:
-  config [init|show]             Manage and view configuration
+  config [init|show|validate]    Manage, view and validate configuration
+  doctor                         Diagnose environment, install, config and repo
   push-all [remote]              Push all changes to remote
   verify-sync [--brief]          Verify branch synchronization
   cleanup [command]              Cleanup/Pruning for old staging tags & branches

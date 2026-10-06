@@ -1,8 +1,9 @@
 #!/bin/bash
 # Git Trident Tools — Config management
 # Subcommands:
-#   init    – interactively scaffold ./git-trident-config for a new project
-#   show    – display active configuration (alias for 'git trident version config')
+#   init     – interactively scaffold the project config for a new project
+#   show     – display active configuration
+#   validate – check the configuration without running a workflow operation
 #   help    – show this help
 
 # Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
@@ -263,6 +264,136 @@ EOF
 }
 
 # =============================================================================
+# VALIDATE COMMAND
+# =============================================================================
+
+# Check configuration WITHOUT running a workflow operation.
+#
+# Previously the only way to learn whether a config was usable was to start a
+# real release and watch it fail partway through. This answers the question
+# directly and is safe to run in CI.
+cmd_validate() {
+    log_info "🔍 Validating Git Trident configuration"
+    log_info "========================================"
+    log_empty ""
+
+    local problems=0 warnings=0
+
+    if ! gt_resolve_repo_context; then
+        log_error "❌ Not inside a Git repository."
+        return 1
+    fi
+    log_info "Repository : $GT_REPO_ROOT"
+
+    local global_config="$HOME/$GLOBAL_CONFIG_FILE_NAME"
+    local project_config; project_config="$(gt_repo_path "$CONFIG_FILE_NAME")"
+    [ -f "$project_config" ] || project_config="$(gt_repo_path ".$CONFIG_FILE_NAME")"
+
+    if [ -f "$global_config" ]; then
+        log_info "Global     : $global_config"
+    else
+        log_warn "Global     : not found ($global_config)"
+        warnings=$((warnings + 1))
+    fi
+
+    if [ -f "$project_config" ]; then
+        log_info "Project    : $project_config"
+    else
+        log_error "Project    : not found"
+        log_info  "             Run: git trident config init"
+        return 1
+    fi
+    log_empty ""
+
+    # Load through the real loader so validation matches runtime exactly.
+    if ! load_project_config; then
+        log_error "❌ Configuration failed to load."
+        return 1
+    fi
+
+    log_info "Required keys:"
+    local var
+    for var in "${REQUIRED_CONFIG_VARS[@]}"; do
+        if [ -n "${!var:-}" ]; then
+            log_info "  ✅ $var = ${!var}"
+        else
+            log_error "  ❌ $var is not set"
+            problems=$((problems + 1))
+        fi
+    done
+    log_empty ""
+
+    log_info "Branches:"
+    local b
+    for var in PRODUCTION_BRANCH STAGING_BRANCH DEVELOP_BRANCH; do
+        b="${!var:-}"
+        [ -z "$b" ] && continue
+        if git show-ref --verify --quiet "refs/heads/$b"; then
+            log_info "  ✅ $b (local)"
+        elif git ls-remote --heads "$REMOTE" "$b" 2>/dev/null | grep -q .; then
+            log_warn "  ⚠️  $b exists on $REMOTE but not locally"
+            warnings=$((warnings + 1))
+        else
+            log_error "  ❌ $b does not exist"
+            problems=$((problems + 1))
+        fi
+    done
+    log_empty ""
+
+    log_info "Remote:"
+    if git remote get-url "$REMOTE" >/dev/null 2>&1; then
+        log_info "  ✅ $REMOTE -> $(git remote get-url "$REMOTE")"
+    else
+        log_error "  ❌ remote '$REMOTE' is not configured"
+        problems=$((problems + 1))
+    fi
+    log_empty ""
+
+    if is_platform_specific_mode; then
+        log_info "Platforms:"
+        log_info "  All         : ${PLATFORMS:-<unset>}"
+        log_info "  Common      : ${COMMON_PLATFORMS:-<unset>}"
+        log_info "  Independent : ${INDEPENDENT_PLATFORMS:-<unset>}"
+        local errs=()
+        validate_platform_classification "errs"
+        if [ "${#errs[@]}" -eq 0 ]; then
+            log_info "  ✅ Classification is consistent"
+        else
+            local e
+            for e in ${errs[@]+"${errs[@]}"}; do
+                log_error "  ❌ $e"
+                problems=$((problems + 1))
+            done
+        fi
+        log_empty ""
+    fi
+
+    local found_schema="${CONFIG_SCHEMA_VERSION:-}"
+    if [ -z "$found_schema" ]; then
+        log_warn "Schema: no CONFIG_SCHEMA_VERSION (assuming 1)"
+        log_info "        Add: CONFIG_SCHEMA_VERSION=\"$CONFIG_SCHEMA_CURRENT\""
+        warnings=$((warnings + 1))
+    elif [ "$found_schema" != "$CONFIG_SCHEMA_CURRENT" ]; then
+        log_warn "Schema: config is version $found_schema; current is $CONFIG_SCHEMA_CURRENT"
+        warnings=$((warnings + 1))
+    else
+        log_info "Schema: version $found_schema (current)"
+    fi
+    log_empty ""
+
+    log_info "========================================"
+    if [ "$problems" -gt 0 ]; then
+        log_error "❌ $problems problem(s), $warnings warning(s)"
+        return 1
+    elif [ "$warnings" -gt 0 ]; then
+        log_warn "⚠️  Valid, with $warnings warning(s)"
+        return 0
+    fi
+    log_info "✅ Configuration is valid"
+    return 0
+}
+
+# =============================================================================
 # SHOW COMMAND (alias for 'git trident version config')
 # =============================================================================
 
@@ -289,6 +420,9 @@ main() {
         "init")
             cmd_init "$@"
             ;;
+        "validate"|"check")
+            cmd_validate
+            ;;
         "show"|"")
             cmd_show "$@"
             ;;
@@ -297,7 +431,7 @@ main() {
             ;;
         *)
             log_error "Unknown config subcommand: $subcommand"
-            log_error "Usage: git trident config [init|show|help]"
+            log_error "Usage: git trident config [init|show|validate|help]"
             exit 1
             ;;
     esac

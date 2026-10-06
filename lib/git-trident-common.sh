@@ -48,6 +48,7 @@ OPTIONAL_CONFIG_VARS=(
     "VALIDATE_REMOTE_CONNECTIVITY=true"
     "CONFIG_VALIDATION_MODE=strict"
     "CONFIG_PARSER=strict"
+    "CONFIG_SCHEMA_VERSION=1"
     # Multi-platform configuration
     "PLATFORM_SPECIFIC_TAGS=false"
     "PLATFORMS="
@@ -98,16 +99,38 @@ GLOBAL_ONLY_CONFIG_KEYS=(
 # COLOR AND LOGGING UTILITIES
 # =============================================================================
 
-# Color output (with fallback for non-TTY)
-if [[ -t 1 ]]; then
+# ---------------------------------------------------------------------------
+# Colour
+# ---------------------------------------------------------------------------
+# Decided by whether STDERR is a terminal, not stdout.
+#
+# Every log function writes to stderr, so testing `-t 1` asked the wrong
+# question: piping stdout (`git trident status > file`) stripped colour from
+# logs that were still going to the terminal, while piping only stderr
+# (`2> file`) wrote escape codes into the file.
+#
+# Precedence, highest first:
+#   GT_COLOR=never|always|auto   explicit override
+#   --no-color                   sets GT_COLOR=never before this file loads
+#   NO_COLOR set (any value)     the https://no-color.org convention
+#   auto                         colour when stderr is a terminal
+gt_setup_colors() {
+    local mode="${GT_COLOR:-auto}"
+
+    if [[ "$mode" != "always" ]]; then
+        if [[ "$mode" == "never" ]] || [[ -n "${NO_COLOR+x}" ]] || [[ ! -t 2 ]]; then
+            RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+            return 0
+        fi
+    fi
+
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     YELLOW='\033[1;33m'
     BLUE='\033[0;34m'
     NC='\033[0m' # No Color
-else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
-fi
+}
+gt_setup_colors
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
 log_empty() { echo -e "${NC} $1" >&2; }
@@ -974,10 +997,26 @@ confirm_action() {
     local message="$1"
     local default="${2:-false}"
 
+    # --yes / --non-interactive. Exported by bin/git-trident so it survives the
+    # `exec` into a subcommand; it is a per-invocation runtime flag, not
+    # configuration, which is why it travels in the environment while config
+    # deliberately does not.
+    if [[ "${GT_ASSUME_YES:-false}" == "true" ]]; then
+        log_debug "Auto-confirming (--yes): $message"
+        return 0
+    fi
+
     # Respect REQUIRE_CONFIRMATION (primary developer tool)
-    if [[ "$REQUIRE_CONFIRMATION" == "false" ]]; then
+    if [[ "${REQUIRE_CONFIRMATION:-true}" == "false" ]]; then
         log_debug "Auto-confirming action due to REQUIRE_CONFIRMATION=false: $message"
         return 0
+    fi
+
+    # Non-interactive with no explicit --yes: refuse rather than block forever.
+    if [[ ! -t 0 ]] && [[ ! -r /dev/tty ]]; then
+        log_warn "No terminal available to confirm: $message"
+        log_info "Pass --yes to proceed without confirmation."
+        return 1
     fi
 
     while true; do
@@ -999,9 +1038,14 @@ confirm_action() {
     done
 }
 
-# Force confirmation from user — always prompts even if REQUIRE_CONFIRMATION=false.
-# Use this for safety-critical actions that MUST have human review,
-# e.g. resolving merge conflicts when CONFLICT_STRATEGY=interactive.
+# Force confirmation from user — always prompts even if REQUIRE_CONFIRMATION=false
+# AND even with --yes. Use this for safety-critical actions that MUST have human
+# review, e.g. resolving merge conflicts when CONFLICT_STRATEGY=interactive.
+#
+# --yes deliberately does not apply here. Auto-confirming "have you resolved the
+# conflicts?" would answer yes on the user's behalf about work only they can
+# have done. In a non-interactive run the read sees EOF, the default (No)
+# applies, and the operation aborts — which is the correct outcome.
 force_confirm_action() {
     local message="$1"
     local default="${2:-false}"
