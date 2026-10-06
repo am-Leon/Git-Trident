@@ -1,7 +1,7 @@
 # Git Trident - Master Test Registry
 
 This document is the Source of Truth for the logic rules, validation constraints and expected
-behaviours of the scripts in Git Trident. Every case listed here has a corresponding automated
+behaviors of the scripts in Git Trident. Every case listed here has a corresponding automated
 test, named in its **Status** column.
 
 > The ✅ in Status is the asserting suite, not a claim. The previous "📝 Implemented" marker
@@ -26,8 +26,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
    start.
 4. **Capital Start:** Description must start with a capital letter (except for `cmd:` prefix).
 
-| ID                          | Test Case Description           | Input/Trigger               | Expected Result        | Status         |
-|-----------------------------|---------------------------------|-----------------------------|------------------------|----------------|
+| ID                          | Test Case Description           | Input/Trigger               | Expected Result        | Status                  |
+|-----------------------------|---------------------------------|-----------------------------|------------------------|-------------------------|
 | CM_01_MERGE_BYPASS          | Bypass Merge commit             | `Merge branch develop`      | 0 (Success)            | ✅ `test_commit_msg.sh` |
 | CM_02_LEGACY_VALID          | Valid legacy commit             | `feat: Add login`           | 0 (Success)            | ✅ `test_commit_msg.sh` |
 | CM_03_LEGACY_SPACE_ERR      | Legacy extra space error        | `feat:  Add login`          | 1 (Fail)               | ✅ `test_commit_msg.sh` |
@@ -52,8 +52,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
 3. **RC Number Extraction:** Extracts the numeric padding after `-rc-` (or custom suffix).
 4. **Staging Version Format:** Ensure staging releases strictly use `<platform>-X.Y.Z` or just `X.Y.Z` (no `-rc-XX`).
 
-| ID                          | Test Case Description             | Input/Trigger                                       | Expected Result | Status         |
-|-----------------------------|-----------------------------------|-----------------------------------------------------|-----------------|----------------|
+| ID                          | Test Case Description             | Input/Trigger                                       | Expected Result | Status                     |
+|-----------------------------|-----------------------------------|-----------------------------------------------------|-----------------|----------------------------|
 | VU_01_EXTRACT_PLATFORM      | Extract platform string           | `extract_platform_from_version android-1.2.3-rc-01` | 'android'       | ✅ `test_version_utils.sh` |
 | VU_02_EXTRACT_PLATFORM_NONE | Legacy format gives no platform   | `extract_platform_from_version 1.2.3`               | ''              | ✅ `test_version_utils.sh` |
 | VU_03_BASE_VERS_PLATFORM    | Base version from platform format | `extract_base_version android-1.2.3-rc-05`          | '1.2.3'         | ✅ `test_version_utils.sh` |
@@ -73,8 +73,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
 2. **New Release Guard:** A new staging release (`staging release start`) can only be created if NO release candidates (
    `-rc-XX`) exist for that base version.
 
-| ID                     | Test Case Description  | Input/Trigger                                                 | Expected Result | Status         |
-|------------------------|------------------------|---------------------------------------------------------------|-----------------|----------------|
+| ID                     | Test Case Description  | Input/Trigger                                                 | Expected Result | Status                               |
+|------------------------|------------------------|---------------------------------------------------------------|-----------------|--------------------------------------|
 | STG_01_PROD_GUARD      | Production tag exists  | `validate_version_not_in_production 1.2.3` (mock tag exists)  | 1 (Fail)        | ✅ `test_staging_prod_validators.sh` |
 | STG_02_PROD_GUARD_PASS | Production tag missing | `validate_version_not_in_production 1.2.3` (mock tag missing) | 0 (Success)     | ✅ `test_staging_prod_validators.sh` |
 | STG_03_NEW_REL_GUARD   | RC tags exist for base | `validate_new_base_version 1.2.3` (mock RCs exist)            | 1 (Fail)        | ✅ `test_staging_prod_validators.sh` |
@@ -86,8 +86,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
 
 1. **Release Blocked:** A production release cannot start if the production tag already exists for that version.
 
-| ID                  | Test Case Description   | Input/Trigger                                   | Expected Result | Status         |
-|---------------------|-------------------------|-------------------------------------------------|-----------------|----------------|
+| ID                  | Test Case Description   | Input/Trigger                                   | Expected Result | Status                               |
+|---------------------|-------------------------|-------------------------------------------------|-----------------|--------------------------------------|
 | PROD_01_TAG_EXISTS  | Prod tag already exists | `validate_release_version 1.2.3` (mock exists)  | 1 (Fail)        | ✅ `test_staging_prod_validators.sh` |
 | PROD_02_TAG_MISSING | Prod tag missing        | `validate_release_version 1.2.3` (mock missing) | 0 (Success)     | ✅ `test_staging_prod_validators.sh` |
 
@@ -100,8 +100,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
 2. **Version Greater Rule:** A staging tag is only included for sync if its base version is greater than the production
    version syncing from (legacy mode).
 
-| ID                      | Test Case Description   | Input/Trigger                                                    | Expected Result | Status         |
-|-------------------------|-------------------------|------------------------------------------------------------------|-----------------|----------------|
+| ID                      | Test Case Description   | Input/Trigger                                                    | Expected Result | Status                  |
+|-------------------------|-------------------------|------------------------------------------------------------------|-----------------|-------------------------|
 | SYNC_01_NOT_DEPRECATED  | Sync from latest prod   | `validate_production_tag_not_deprecated 2.0.0` (latest is 2.0.0) | 0 (Success)     | ✅ `test_sync_utils.sh` |
 | SYNC_02_DEPRECATED      | Sync from old prod      | `validate_production_tag_not_deprecated 1.0.0` (latest is 2.0.0) | 1 (Fail)        | ✅ `test_sync_utils.sh` |
 | SYNC_03_INCLUDE_TAG_YES | Staging > Prod version  | `should_include_tag_for_production_sync 1.0.0 2.0.0`             | 0 (Success)     | ✅ `test_sync_utils.sh` |
@@ -126,8 +126,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
 7. **Production Aggregation:** New production releases aggregate all staging RC commits into one entry.
 8. **Prepend Order:** New versions are prepended on top of existing file content.
 
-| ID                       | Test Case Description              | Input/Trigger                                | Expected Result                  | Status         |
-|--------------------------|------------------------------------|----------------------------------------------|----------------------------------|----------------|
+| ID                       | Test Case Description              | Input/Trigger                                | Expected Result                  | Status                 |
+|--------------------------|------------------------------------|----------------------------------------------|----------------------------------|------------------------|
 | CL_01_STG_CREATES_FILES  | Staging creates CHANGELOG + QA     | Staging env, write_files                     | CHANGELOG.md + QA_NOTES.md exist | ✅ `test_changelog.sh` |
 | CL_02_PROD_CREATES_FILES | Prod creates CHANGELOG + RN        | Production env, write_files                  | CHANGELOG.md + RELEASE_NOTES.md  | ✅ `test_changelog.sh` |
 | CL_03_STG_HEADER_RC      | Staging header uses RC version     | resolve_version_display staging 1.0.0        | `1.0.0-rc-02`                    | ✅ `test_changelog.sh` |
@@ -153,8 +153,8 @@ real binaries. The **end-to-end suites** in the final section close that gap.
 4. **Cleanup Routing:** `cleanup sync [tags|branches]` and `cleanup prune [tags]` accurately dispatch commands.
 5. **Dry-Run Mode:** `--dry-run` prevents state mutation and accurately logs impacts.
 
-| ID                                   | Test Case Description                | Input/Trigger                                       | Expected Result                        | Status         |
-|--------------------------------------|--------------------------------------|-----------------------------------------------------|----------------------------------------|----------------|
+| ID                                   | Test Case Description                | Input/Trigger                                       | Expected Result                        | Status                            |
+|--------------------------------------|--------------------------------------|-----------------------------------------------------|----------------------------------------|-----------------------------------|
 | CONFIG_01_INTERACTIVE_INIT           | Initializes project config wizard    | `bin/git-trident-config init`                       | File generated, variables match input  | ✅ `test_config_cleanup_hooks.sh` |
 | CONFIG_02_TWO_TIER_LOADING           | Project overrides global config      | `load_project_config`                               | Global defaults with project overlay   | ✅ `test_config_cleanup_hooks.sh` |
 | CONFIG_03_GLOBAL_ONLY_KEY_PROTECTION | Protect global-only overrides        | `load_project_config`                               | Rejects global keys in project config  | ✅ `test_config_cleanup_hooks.sh` |
@@ -172,22 +172,22 @@ These drive `bin/git-trident` against throwaway repositories built by
 `tests/lib/repo_fixture.sh` (isolated `HOME`, real bare remote, stdout/stderr/exit captured
 separately, stdin from `/dev/null` so a prompt can never hang a run).
 
-| Suite | Asserts | Covers |
-|---|---:|---|
-| `test_e2e_staging_flow.sh` | 31 | release start/finish, hotfix RC sequencing, merge-chain integrity, branch cleanup, no lock residue |
-| `test_e2e_production_flow.sh` | 29 | promotion of the **latest** RC, downstream sync, auto patch increment, double-release rejection, staging blocked after release |
-| `test_e2e_sync_tags.sh` | 16 | propagation staging→staging and production→staging, `--dry-run` is read-only, idempotence, no orphaned temp branches |
-| `test_e2e_cwd.sh` | 17 | every command from three levels down, artifacts at the repository root, real git-dir usage, worktrees |
-| `test_e2e_platform_flow.sh` | 19 | multi-platform releases, independent-platform isolation, version-format enforcement, platform-filtered push with zero tags |
-| `test_e2e_push_all.sh` | 14 | branch and tag push, idempotence, unreachable remote surfaces git's error |
+| Suite                         | Asserts | Covers                                                                                                                         |
+|-------------------------------|--------:|--------------------------------------------------------------------------------------------------------------------------------|
+| `test_e2e_staging_flow.sh`    |      31 | release start/finish, hotfix RC sequencing, merge-chain integrity, branch cleanup, no lock residue                             |
+| `test_e2e_production_flow.sh` |      29 | promotion of the **latest** RC, downstream sync, auto patch increment, double-release rejection, staging blocked after release |
+| `test_e2e_sync_tags.sh`       |      16 | propagation staging→staging and production→staging, `--dry-run` is read-only, idempotence, no orphaned temp branches           |
+| `test_e2e_cwd.sh`             |      17 | every command from three levels down, artifacts at the repository root, real git-dir usage, worktrees                          |
+| `test_e2e_platform_flow.sh`   |      19 | multi-platform releases, independent-platform isolation, version-format enforcement, platform-filtered push with zero tags     |
+| `test_e2e_push_all.sh`        |      14 | branch and tag push, idempotence, unreachable remote surfaces git's error                                                      |
 
 ## Guard Suites
 
 Static gates that fail the build rather than relying on review.
 
-| Suite | Asserts | Guards against |
-|---|---:|---|
-| `test_bash32_compat.sh` | 15 | Bash 4.0–4.3 constructs, `set -u`, CRLF line endings, missing `.gitattributes`, wrong git-index exec bits, missing shebangs |
-| `test_shellcheck.sh` | 5 | shellcheck errors, SC2154, quoting/array-splitting, correctness codes in shipped code, SC2155 growth |
-| `test_no_duplicate_symbols.sh` | 4 | two `lib/` files defining the same function — how `show_detection_analysis` came to exist twice with different parameter orders |
-| `test_subprocess_config.sh` | 6 | configuration crossing a process boundary; dispatcher and direct invocation disagreeing |
+| Suite                          | Asserts | Guards against                                                                                                                  |
+|--------------------------------|--------:|---------------------------------------------------------------------------------------------------------------------------------|
+| `test_bash32_compat.sh`        |      15 | Bash 4.0–4.3 constructs, `set -u`, CRLF line endings, missing `.gitattributes`, wrong git-index exec bits, missing shebangs     |
+| `test_shellcheck.sh`           |       5 | shellcheck errors, SC2154, quoting/array-splitting, correctness codes in shipped code, SC2155 growth                            |
+| `test_no_duplicate_symbols.sh` |       4 | two `lib/` files defining the same function — how `show_detection_analysis` came to exist twice with different parameter orders |
+| `test_subprocess_config.sh`    |       6 | configuration crossing a process boundary; dispatcher and direct invocation disagreeing                                         |
