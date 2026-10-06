@@ -2,7 +2,26 @@
 # Git Trident Hooks - Hook Management CLI
 # Manage Git Trident Tools hooks installation and configuration
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- Git Trident entry-point preamble (A1a) ---------------------------------
+# Resolve this script's REAL location, following symlinks, so the tool works
+# when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)
+# and when installed to a custom directory.
+#
+# Portability notes (macOS / Linux / Windows Git Bash):
+#   * plain `readlink`, never `readlink -f` — `-f` is GNU-only and missing on
+#     macOS before 12.3; plain readlink is POSIX and present on BSD and MSYS2.
+#   * the loop follows symlink CHAINS and relative link targets.
+#   * on Windows, `ln -s` normally copies rather than links, so [ -L ] is false
+#     and the loop is simply skipped — correct behaviour either way.
+GT_SELF="${BASH_SOURCE[0]}"
+while [ -L "$GT_SELF" ]; do
+    GT_LINK_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+    GT_SELF="$(readlink "$GT_SELF")"
+    case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+# ----------------------------------------------------------------------------
 
 # =============================================================================
 # DYNAMIC PATH DISCOVERY
@@ -10,25 +29,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Try to discover the installation directory
 discover_install_dir() {
-    # 1. Check if we're running from development directory
-    if [[ -f "$SCRIPT_DIR/../lib/git-trident-common.sh" ]]; then
-        echo "$(cd "$SCRIPT_DIR/.." && pwd)"
+    # 1. GT_INSTALL_ROOT comes from the entry-point preamble, which has already
+    #    followed any symlinks. This is the authoritative answer and covers the
+    #    development checkout, a default install, a custom install path, and a
+    #    symlinked entry point alike.
+    if [[ -f "$GT_INSTALL_ROOT/lib/git-trident-common.sh" ]]; then
+        echo "$GT_INSTALL_ROOT"
         return 0
     fi
 
-    # 2. Check if we're in a symlinked installation
-    if [[ -L "$SCRIPT_DIR/git-trident-hooks" ]] || [[ -L "$0" ]]; then
-        local link_target=$(readlink -f "$SCRIPT_DIR/git-trident-hooks" 2>/dev/null || readlink -f "$0" 2>/dev/null)
-        if [[ -n "$link_target" ]]; then
-            local possible_dir=$(dirname "$(dirname "$link_target")")
-            if [[ -f "$possible_dir/lib/git-trident-common.sh" ]]; then
-                echo "$possible_dir"
-                return 0
-            fi
-        fi
-    fi
+    # NOTE: a `readlink -f` branch used to live here. It is redundant now that
+    # the preamble resolves symlinks, and it was GNU-only — `readlink -f` does
+    # not exist on macOS before 12.3, so the branch could not work on the very
+    # platform it was written for.
 
-    # 3. Check common installation locations
+    # 2. Check common installation locations
     local common_locations=(
         "$HOME/.git-trident"
         "/usr/local/share/git-trident"
@@ -42,7 +57,7 @@ discover_install_dir() {
         fi
     done
 
-    # 4. Last resort: check PATH for git-trident command
+    # 3. Last resort: check PATH for git-trident command
     local tools_path=$(command -v git-trident 2>/dev/null)
     if [[ -n "$tools_path" ]]; then
         local possible_dir=$(dirname "$(dirname "$tools_path")")
