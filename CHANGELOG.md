@@ -32,14 +32,14 @@ If you prefer a clean install, or if the above fails for any reason:
 curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh | bash
 ```
 
-**Two changes alter existing behaviour. Read these before upgrading.**
+**Two changes alter existing behavior. Read these before upgrading.**
 
 1. **Configuration files are parsed, not executed.** A project config containing
    shell expressions — command substitution, variable interpolation — will no
    longer evaluate them. Plain `KEY=value` and `KEY="value"` are unaffected,
    which covers every generated config and every documented example. If yours
    relies on shell evaluation, set `CONFIG_PARSER=legacy` in
-   `~/.git-trident-config` to restore the old behaviour for one minor version,
+   `~/.git-trident-config` to restore the old behavior for one minor version,
    and migrate before the next.
 
 2. **`config init` no longer silently writes `false` for options you accepted.**
@@ -86,7 +86,7 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
   `Failed to push 1 tags:` and exited 1 — the path `AUTO_PUSH_ON_FINISH=true`
   takes.
 - **`curl … | bash` could not install on macOS.** The installer re-executed into
-  Bash 4+ for a single colour map; piped from stdin it tried to run the `bash`
+  Bash 4+ for a single color map; piped from stdin it tried to run the `bash`
   binary as a script (`cannot execute binary file`). It failed even with
   Homebrew's bash installed.
 
@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
   sat unused.
 - **Global hooks reported errors in unrelated repositories** — seven `[ERROR]`
   lines on every commit in any project that had not opted in.
-- **Colour was decided by whether stdout is a terminal**, while all logs go to
+- **Color was decided by whether stdout is a terminal**, while all logs go to
   stderr; piping either stream produced the wrong result.
 - `push-all` pushed each branch **twice** and read `grep`'s exit status instead
   of git's.
@@ -153,7 +153,7 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
 - Configuration is **parsed rather than executed**. A committed project config is
   no longer a script that runs on every teammate's machine, and settings no
   longer leak into the environment of child processes. `CONFIG_PARSER=legacy`
-  restores the old behaviour for one minor version.
+  restores the old behavior for one minor version.
 - **Bash 3.2 is the supported floor** — macOS's system Bash. `brew install bash`
   is no longer a prerequisite.
 - `verify-sync --report` writes to `.git-trident-reports/` instead of `.git/`.
@@ -185,12 +185,12 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
 Expanded from 10 suites to 22, and from unit-level string checks to end-to-end
 runs against real repositories.
 
-| | Before | After |
-|---|---|---|
-| Suites | 10 | 22 |
-| Assertions | 147 | 373 |
-| End-to-end suites | 0 | 8 |
-| Static gates | 0 | 4 |
+|                   | Before | After |
+|-------------------|--------|-------|
+| Suites            | 10     | 22    |
+| Assertions        | 147    | 373   |
+| End-to-end suites | 0      | 8     |
+| Static gates      | 0      | 4     |
 
 New guards fail the build rather than relying on review: Bash 4+ constructs,
 CRLF line endings, git-index executable bits, shellcheck findings, duplicate
