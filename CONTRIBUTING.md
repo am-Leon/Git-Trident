@@ -221,8 +221,14 @@ Run the release tool from the root of the repository to bump version configurati
 
 ### CI/CD Pipeline
 
-- **Continuous Integration**: Pushes to `main`/`develop` and pull requests to `main` trigger tests on both Ubuntu and
-  macOS runner platforms (`.github/workflows/ci.yml`).
-- **Continuous Deployment**: When a new tag `v*` is pushed by `bump-version.sh`, the release workflow (
-  `.github/workflows/release.yml`) builds the distribution package, runs tests, and publishes a new GitHub Release with
-  the tarball attached.
+One workflow, `.github/workflows/ci.yml`, handles both. They were separate files
+until the release path was found to be running a *weaker* gate than pull requests
+did — tests on Ubuntu only, while macOS is the compatibility floor.
+
+| Job | Runs on | Does |
+|-----------------|--------------------------------------------|---------------------------------------------------------------|
+| `test` | every push to `main`/`develop`, every PR, and every `v*` tag | Full suite on Ubuntu **and** macOS, with shellcheck installed so `test_shellcheck.sh` actually executes |
+| `version-sync` | the same | Constants vs. test assertions, plus the tag itself on a tag build — before anything is built |
+| `release` | `v*` tags only (`if: startsWith(github.ref, 'refs/tags/v')`) | Builds the tarball, checks it reports the tag's version, publishes the GitHub Release |
+
+`release` needs both other jobs, so a tag that fails on macOS never publishes.

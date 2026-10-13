@@ -82,6 +82,7 @@ Global Options (valid with any command):
   --no-color                     Disable coloured output (also honours NO_COLOR)
   --debug                        Verbose diagnostic output
   --help, -h                     Show help for the command
+  --version, -V                  Print the version and exit
 
 Examples:
 EOF

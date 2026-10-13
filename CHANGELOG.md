@@ -123,6 +123,28 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
 - Two files were missing their executable bit, so running from a clone failed
   with `Permission denied`.
 
+**Release tooling**
+
+- **`build.sh` never checked its own output.** It now unpacks the finished
+  tarball, confirms the required members and executable bits survived, and runs
+  the packaged binary — which is how the missing `--version` flag was found.
+  The archive also ships `LICENSE` and `CHANGELOG.md`.
+- **`build.sh` claimed to sync `install.sh` and did not.** Its `sed` keyed off a
+  trailing comment the file no longer carries, so it matched nothing while
+  printing `✓ Synced`. Replaced with a check that fails on a real mismatch
+  rather than a build step that rewrites tracked source.
+- **`bump-version.sh` ran its checks after publishing.** It edited, built,
+  tested, `git add -A`'d, committed and pushed before ever asking whether the
+  tag already existed. Preflight now runs first: clean tree, tag not already
+  present locally or on `origin`, version actually newer, and an explicit
+  confirmation of the branch being released from.
+- **`bump-version.sh` committed unrelated work.** `git add -A` swept the whole
+  tree into a commit labelled as a version bump; it now stages only the files it
+  changed. The commit message is `chore: Release vX.Y.Z` rather than `wip:`, and
+  the tag is annotated.
+- **A released changelog still said "Unreleased".** `bump-version.sh` now dates
+  the `[Unreleased]` heading as part of the bump.
+
 ### Added
 
 - **`git trident doctor`** — checks environment, installation, configuration,
@@ -143,6 +165,13 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
   silence the merge-conflict prompt, which asks about work only a human can have
   done.
 - **`--no-color`**, plus `NO_COLOR` and `GT_COLOR=never|always|auto`.
+- **`--version` / `-V`** — prints `git-trident <version>` on stdout and works
+  outside a repository. Only the `version` *subcommand* was recognised before,
+  so the flag form fell through to the repository gate and answered the most
+  universal flag in any CLI with "❌ Not inside a Git repository".
+- **`LICENSE`** (MIT) — the README has always linked to it; it was never
+  committed, and it is now shipped inside the release tarball as the licence
+  terms require.
 - **Shell completions** for bash and zsh, completing versions and platforms read
   from the repository.
 - **`git trident cleanup prune temp`** — removes orphaned sync branches.
@@ -160,6 +189,14 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
 - Verification helpers that report a *finding* are named `has_*`, not `check_*`.
 - Ten colliding function names across libraries were given module prefixes.
 - Git failures now show git's actual error instead of `✗ Failed: <step>`.
+- **CI and release are one workflow.** As two files the release path ran a
+  *weaker* gate than pull requests did — Ubuntu only, while macOS is the
+  Bash 3.2 compatibility floor, so the platform most likely to break was the one
+  never tested before publishing. The release job now needs the full matrix.
+  shellcheck is installed on both runners, so `test_shellcheck.sh` stops
+  skipping itself; the version check runs before the build instead of after it;
+  `grep -oP` is gone (PCRE is absent from BSD grep); and the workflow declares
+  `permissions: contents: read` with `concurrency` that never cancels a tag.
 
 ### Removed
 
@@ -187,15 +224,17 @@ runs against real repositories.
 
 |                   | Before | After |
 |-------------------|--------|-------|
-| Suites            | 10     | 22    |
-| Assertions        | 147    | 373   |
+| Suites            | 10     | 23    |
+| Assertions        | 147    | 462   |
 | End-to-end suites | 0      | 8     |
-| Static gates      | 0      | 4     |
+| Static gates      | 0      | 5     |
 
 New guards fail the build rather than relying on review: Bash 4+ constructs,
 CRLF line endings, git-index executable bits, shellcheck findings, duplicate
-library symbols, configuration crossing a process boundary, and the `--dry-run`
-no-mutation invariant.
+library symbols, configuration crossing a process boundary, the `--dry-run`
+no-mutation invariant, and documentation coverage — every dispatcher command
+must appear in both the main help and the README, and every global flag must be
+documented.
 
 The suite now runs under the **platform's own bash** and warns loudly when that
 is not 3.2, so a green run on a newer shell is never mistaken for proof that

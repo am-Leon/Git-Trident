@@ -1,45 +1,142 @@
 name: CI
 
+# One workflow for both jobs the repository has: proving a change is sound, and
+# publishing a tag. They share the same test gate, so splitting them meant the
+# release path ran a *different*, weaker gate than the pull request did.
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
+
+# Read-only by default. Only the release job widens this, and only for itself.
+permissions:
+  contents: read
+
+# A second push to a branch cancels the first. Tags are never cancelled: a
+# half-run release is worse than a slow one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
   test:
     name: Tests (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
         os: [ ubuntu-latest, macos-latest ]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
+      # tests/test_shellcheck.sh skips itself when shellcheck is absent, which
+      # made the gate pass by not running. Install it so it actually executes.
+      - name: Install shellcheck
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            echo "shellcheck already present: $(shellcheck --version | awk '/^version:/{print $2}')"
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          else
+            brew install shellcheck
+          fi
+
+      # macOS is the compatibility floor (Bash 3.2.57). Printing it makes a
+      # green run attributable to a shell, not just to a platform name.
+      - name: Report bash version
+        run: /bin/bash --version | head -1
+
       - name: Run all tests
         run: bash tests/run_all.sh
 
-  version-sync-check:
-    name: Version Sync Check
+  version-sync:
+    name: Version Sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
       - name: Verify version consistency
         run: |
-          CONST_VER=$(grep 'TRIDENT_VERSION=' lib/git-trident-constants.sh | cut -d'"' -f2)
-          # Extract version strings from test assertions
-          TEST_VERSIONS=$(grep -oP '"\d+\.\d+\.\d+"' tests/test_remote_installation.sh | tr -d '"' | sort -u)
-          
+          set -euo pipefail
+          CONST_VER="$(grep 'TRIDENT_VERSION=' lib/git-trident-constants.sh | cut -d'"' -f2)"
           echo "Constants version: $CONST_VER"
-          echo "Test versions found: $TEST_VERSIONS"
-          
+
+          # POSIX ERE, not grep -oP: PCRE is a GNU extension and is absent from
+          # BSD grep, so -P would break the day this moves to a macOS runner.
+          TEST_VERSIONS="$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' \
+                           tests/test_remote_installation.sh | tr -d '"' | sort -u)"
+          echo "Test versions found: ${TEST_VERSIONS:-<none>}"
+
           for ver in $TEST_VERSIONS; do
-            if [[ "$ver" != "$CONST_VER" ]]; then
-              echo "::error::Version mismatch! constants=$CONST_VER tests=$ver"
+            if [ "$ver" != "$CONST_VER" ]; then
+              echo "::error::Version mismatch: constants=$CONST_VER tests=$ver"
               echo "Fix: ./scripts/bump-version.sh $CONST_VER"
               exit 1
             fi
           done
-          
-          echo "✅ All versions are in sync: $CONST_VER"
+
+          # On a tag, the tag itself is a third source that must agree. Checked
+          # here rather than in the release job so it fails before the build.
+          case "${GITHUB_REF}" in
+            refs/tags/v*)
+              TAG_VER="${GITHUB_REF_NAME#v}"
+              if [ "$CONST_VER" != "$TAG_VER" ]; then
+                echo "::error::Version mismatch: tag=$TAG_VER constants=$CONST_VER"
+                echo "Fix: ./scripts/bump-version.sh $TAG_VER"
+                exit 1
+              fi
+              echo "Tag version: $TAG_VER"
+              ;;
+          esac
+
+          echo "✅ Versions are in sync: $CONST_VER"
+
+  release:
+    name: Build & Release
+    # Only for v* tags. On every other trigger this job is skipped, which is
+    # why the two workflows could be merged without the release path firing.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ test, version-sync ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build tarball
+        run: bash build.sh
+
+      # build.sh verifies its own output (required members, executable bits, and
+      # that the packaged binary runs). This step re-checks the one thing it
+      # cannot know: that the artifact matches the tag being released.
+      - name: Verify the tarball matches the tag
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          tar -xzf dist/git-trident.tar.gz -C "$work"   # archive is flat by design
+          PACKED="$("$work/bin/git-trident" --version)"
+          EXPECT="git-trident ${GITHUB_REF_NAME#v}"
+          echo "packaged: $PACKED"
+          if [ "$PACKED" != "$EXPECT" ]; then
+            echo "::error::Tarball reports '$PACKED', expected '$EXPECT'"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/git-trident.tar.gz
+          generate_release_notes: true
+          name: "Git Trident ${{ github.ref_name }}"
+          body: |
+            ## Installation
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh | bash
+            ```
+
+            Already installed? `git trident version update`
+
+            Or download `git-trident.tar.gz` from the assets below and install manually.

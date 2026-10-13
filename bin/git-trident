@@ -73,7 +73,7 @@ set -- ${GT_FILTERED_ARGS[@]+"${GT_FILTERED_ARGS[@]}"}
 
 # Source common utilities - skip auto-init for help and for utility commands that
 # legitimately run outside a repository.
-if [[ "$GT_WANTS_HELP" == "true" ]] || [[ "${1:-}" =~ ^(help|--help|-h|version|config|hooks|uninstall|doctor)$ ]]; then
+if [[ "$GT_WANTS_HELP" == "true" ]] || [[ "${1:-}" =~ ^(help|--help|-h|--version|-V|version|config|hooks|uninstall|doctor)$ ]]; then
     source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
 else
     source "$SCRIPT_DIR/../lib/git-trident-common.sh"
@@ -721,6 +721,18 @@ main() {
     if [[ "$namespace" == "--help" || "$namespace" == "-h" || "$namespace" == "help" ]] ||
        [[ "${args[0]}" == "--help" || "${args[0]}" == "-h" ]]; then
         show_main_help
+        exit 0
+    fi
+
+    # `--version` / `-V` must work anywhere — outside a repository and without a
+    # project config. Only the `version` *subcommand* was whitelisted, so the
+    # flag form fell through to the repo+config gate and the most universal flag
+    # in any CLI answered with "❌ Not inside a Git repository".
+    if [[ "$namespace" == "--version" || "$namespace" == "-V" ]]; then
+        # One parseable line on STDOUT. `git trident version` prints the full
+        # diagnostic dashboard, but that goes to stderr like every other log, so
+        # the flag form would otherwise emit nothing a script could read.
+        echo "git-trident ${TRIDENT_VERSION:-unknown}"
         exit 0
     fi
 

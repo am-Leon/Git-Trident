@@ -198,6 +198,7 @@ These work with any command.
 | `--no-color` | Disable coloured output. `NO_COLOR` and `GT_COLOR=never\|always\|auto` are also honoured. |
 | `--debug` | Verbose diagnostic output. |
 | `--help`, `-h` | Show help for the command. Never requires a repository, a config, or the network. |
+| `--version`, `-V` | Print `git-trident <version>` on stdout and exit. Works outside a repository. |
 
 ```bash
 git trident --dry-run production release finish 1.2.0   # see the plan, change nothing
