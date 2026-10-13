@@ -229,7 +229,7 @@ runs against real repositories.
 |                   | Before | After |
 |-------------------|--------|-------|
 | Suites            | 10     | 23    |
-| Assertions        | 147    | 462   |
+| Assertions        | 147    | 465   |
 | End-to-end suites | 0      | 8     |
 | Static gates      | 0      | 5     |
 
