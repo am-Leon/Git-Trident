@@ -11,11 +11,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_framework.sh"
 source "$SCRIPT_DIR/lib/repo_fixture.sh"
 
+# `shasum` is perl's and `sha1sum` is coreutils'; which one exists depends on the
+# platform, so fall back rather than assume. `cksum` is POSIX and always present.
+gt_hash() {
+    if command -v shasum  >/dev/null 2>&1; then shasum
+    elif command -v sha1sum >/dev/null 2>&1; then sha1sum
+    else cksum
+    fi
+}
+
 fingerprint() {
     { git for-each-ref --format='%(refname) %(objectname)' 2>/dev/null
       git status --porcelain 2>/dev/null
       git ls-remote origin 2>/dev/null
-    } | sort | shasum | awk '{print $1}'
+    } | sort | gt_hash | awk '{print $1}'
 }
 
 assert_unchanged_by_dry_run() {
