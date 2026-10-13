@@ -48,8 +48,34 @@ jobs:
       - name: Report bash version
         run: /bin/bash --version | head -1
 
+      # On failure, re-emit the failing suites and assertions as ::error::
+      # annotations. The job log needs repository access to read; annotations do
+      # not, so the failure is diagnosable from the API alone — which is exactly
+      # what was missing when this run first went red and the only available
+      # detail was "Process completed with exit code 1".
       - name: Run all tests
-        run: bash tests/run_all.sh
+        run: |
+          set -o pipefail
+          rc=0
+          bash tests/run_all.sh 2>&1 | tee "$RUNNER_TEMP/suite.log" || rc=$?
+          [ "$rc" -eq 0 ] && exit 0
+
+          # Strip ANSI colour: the escapes would otherwise land in the annotation.
+          sed $'s/\033\[[0-9;]*m//g' "$RUNNER_TEMP/suite.log" > "$RUNNER_TEMP/plain.log"
+
+          echo "::error::Test suite failed on $RUNNER_OS with $(/bin/bash --version | head -1)"
+
+          # Suite names, as run_all.sh lists them under MASTER SUMMARY.
+          grep -E '^[[:space:]]*- test_[A-Za-z0-9_]+\.sh' "$RUNNER_TEMP/plain.log" \
+            | sed 's/^[[:space:]]*- //' | head -10 \
+            | while IFS= read -r suite; do echo "::error::failing suite: $suite"; done
+
+          # GitHub keeps at most 10 error annotations per step, so take the first
+          # few failing assertions rather than all of them.
+          grep -F 'FAIL:' "$RUNNER_TEMP/plain.log" | head -8 \
+            | while IFS= read -r line; do echo "::error::$line"; done
+
+          exit $rc
 
   version-sync:
     name: Version Sync
