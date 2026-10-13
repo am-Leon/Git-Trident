@@ -76,4 +76,31 @@ assert_success "$?" "Global configuration template created in HOME"
 # Clean up our test installation directory
 rm -rf "$TEST_INSTALL_DIR"
 
+# RI_06_INSTALL_VERSION_NORMALISATION
+# Already-installed clients must be able to self-update.
+#
+# `git trident version update` downloads install.sh fresh from main and hands it
+# INSTALL_VERSION. Releases up to v0.1.1 stripped the leading "v" first, which
+# produced .../releases/download/0.1.1/... while the release tag is "v0.1.1" —
+# a 404. The installer therefore accepts both forms, so those clients can
+# upgrade in place instead of every user reinstalling by hand.
+start_test_case "ri_06_install_version_normalisation"
+
+normalise() {
+    # Mirrors the logic in install.sh.
+    local INSTALL_VERSION="$1"
+    if [[ "$INSTALL_VERSION" != "latest" ]] && [[ "$INSTALL_VERSION" != v* ]]; then
+        INSTALL_VERSION="v$INSTALL_VERSION"
+    fi
+    printf '%s' "$INSTALL_VERSION"
+}
+
+assert_equals "$(normalise "0.1.1")"  "v0.1.1" "A bare version gains the v prefix"
+assert_equals "$(normalise "v0.1.1")" "v0.1.1" "A v-prefixed version is left alone"
+assert_equals "$(normalise "latest")" "latest" "'latest' is not prefixed"
+
+# And the installer itself really contains that normalisation.
+grep -q 'INSTALL_VERSION="v\$INSTALL_VERSION"' "$PROJECT_ROOT/install.sh"
+assert_success "$?" "install.sh normalises INSTALL_VERSION"
+
 print_summary

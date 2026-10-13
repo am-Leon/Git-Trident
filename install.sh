@@ -130,6 +130,23 @@ TEMP_DIR=""
 GITHUB_REPO="am-Leon/Git-Trident"
 INSTALL_VERSION="${INSTALL_VERSION:-latest}"
 
+# Accept both "v1.2.3" and "1.2.3" as the release identifier.
+#
+# This is what lets ALREADY-INSTALLED clients self-update. `git trident version
+# update` downloads this installer fresh from the main branch and then hands it
+# INSTALL_VERSION. Releases up to and including v0.1.1 stripped the leading "v"
+# before doing so, which produced
+#     .../releases/download/0.1.1/git-trident.tar.gz   -> 404
+# because the release tag is "v0.1.1". Normalising here means those clients
+# reach the right asset and can upgrade in place, instead of every existing user
+# having to uninstall and reinstall by hand.
+#
+# The release tag format is "v<semver>"; a value that already starts with "v" is
+# left alone, and "latest" is handled separately below.
+if [[ "$INSTALL_VERSION" != "latest" ]] && [[ "$INSTALL_VERSION" != v* ]]; then
+    INSTALL_VERSION="v$INSTALL_VERSION"
+fi
+
 # Remote mode: empty SCRIPT_DIR OR local bin/git-trident not found
 if [[ -z "$SCRIPT_DIR" ]] || [[ ! -f "$SCRIPT_DIR/bin/git-trident" ]]; then
     check_dependencies
