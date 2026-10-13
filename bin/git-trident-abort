@@ -1,0 +1,273 @@
+#!/bin/bash
+# Git Trident Abort — unwind a partially-completed flow.
+#
+# A release or hotfix touches several things in sequence: a branch, a tag, a
+# merge into staging, a merge into develop. When one step fails partway through
+# — a conflict, a lost connection, a Ctrl-C — the repository is left in a state
+# the tool itself refuses to continue from, and the user has to reconstruct by
+# hand which of those steps had already happened.
+#
+# This reports exactly what state the repository is in and offers to undo the
+# parts that are safely undoable.
+#
+# SAFETY: it only ever removes things that are LOCAL and UNPUSHED. A tag or
+# branch that has reached the remote is reported but never deleted, because
+# other people may already have it; undoing that is a conversation, not a
+# command.
+
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See CONTRIBUTING.md (Bash 3.2 cookbook).
+set -o pipefail
+
+# --- Git Trident entry-point preamble (A1a) ---------------------------------
+# Resolve this script's REAL location, following symlinks, so the tool works
+# when the entry point is symlinked onto PATH and when installed to a custom
+# directory. Plain `readlink`, never `readlink -f` (GNU-only, absent on macOS
+# before 12.3); the loop follows chains and relative targets.
+GT_SELF="${BASH_SOURCE[0]}"
+while [ -L "$GT_SELF" ]; do
+    GT_LINK_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+    GT_SELF="$(readlink "$GT_SELF")"
+    case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# shellcheck disable=SC2034  # part of the shared entry-point contract
+GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+# ----------------------------------------------------------------------------
+
+source "$SCRIPT_DIR/../lib/git-trident-common.sh"
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+
+# Is this ref present on the remote? Anything that is, we never touch.
+is_on_remote() {
+    local kind="$1" name="$2"   # kind: heads | tags
+    git ls-remote "--$kind" "$REMOTE" "$name" 2>/dev/null | grep -q .
+}
+
+# ---------------------------------------------------------------------------
+# Inspect
+# ---------------------------------------------------------------------------
+GT_MERGE_IN_PROGRESS=false
+GT_FLOW_BRANCH=""
+GT_FLOW_KIND=""
+GT_FLOW_VERSION=""
+GT_LOCAL_TAGS=""
+GT_TEMP_BRANCHES=""
+GT_STALE_LOCKS=""
+
+inspect_state() {
+    [ -f "$(gt_git_path MERGE_HEAD)" ] && GT_MERGE_IN_PROGRESS=true
+
+    local current; current="$(get_current_branch)"
+    case "$current" in
+        "${RELEASE_STAGING_PREFIX}"*)
+            GT_FLOW_BRANCH="$current"; GT_FLOW_KIND="staging release"
+            GT_FLOW_VERSION="${current#"$RELEASE_STAGING_PREFIX"}" ;;
+        "${HOTFIX_STAGING_PREFIX}"*)
+            GT_FLOW_BRANCH="$current"; GT_FLOW_KIND="staging hotfix"
+            GT_FLOW_VERSION="${current#"$HOTFIX_STAGING_PREFIX"}" ;;
+        "${RELEASE_PRODUCTION_PREFIX}"*)
+            GT_FLOW_BRANCH="$current"; GT_FLOW_KIND="production release"
+            GT_FLOW_VERSION="${current#"$RELEASE_PRODUCTION_PREFIX"}" ;;
+        "${HOTFIX_PRODUCTION_PREFIX}"*)
+            GT_FLOW_BRANCH="$current"; GT_FLOW_KIND="production hotfix"
+            GT_FLOW_VERSION="${current#"$HOTFIX_PRODUCTION_PREFIX"}" ;;
+    esac
+
+    GT_TEMP_BRANCHES="$(git for-each-ref --format='%(refname:short)' \
+        'refs/heads/temp-rebase-*' 'refs/heads/temp-propagate-*' 2>/dev/null)"
+
+    # Tags for the in-flight version that exist locally but not on the remote.
+    if [ -n "$GT_FLOW_VERSION" ]; then
+        local t
+        while IFS= read -r t; do
+            [ -z "$t" ] && continue
+            is_on_remote tags "$t" || GT_LOCAL_TAGS="${GT_LOCAL_TAGS}${t}"$'\n'
+        done < <(git tag -l "${STAGING_TAG_PREFIX}${GT_FLOW_VERSION}*" \
+                             "${PRODUCTION_TAG_PREFIX}${GT_FLOW_VERSION}" 2>/dev/null)
+        GT_LOCAL_TAGS="$(printf '%s' "$GT_LOCAL_TAGS" | grep -v '^$')"
+    fi
+
+    local lock_dir; lock_dir="$(gt_git_path git-trident-locks)"
+    [ -d "$lock_dir" ] && GT_STALE_LOCKS="$(ls "$lock_dir" 2>/dev/null)"
+}
+
+report_state() {
+    log_info "🔎 Current state"
+    log_info "═════════════════════════════════════════"
+
+    local anything=false
+
+    if [ "$GT_MERGE_IN_PROGRESS" = true ]; then
+        anything=true
+        log_warn "  • A merge is IN PROGRESS"
+        git diff --name-only --diff-filter=U 2>/dev/null | head -10 | while IFS= read -r f; do
+            [ -n "$f" ] && log_empty "      conflicted: $f"
+        done
+    fi
+
+    if [ -n "$GT_FLOW_BRANCH" ]; then
+        anything=true
+        log_info "  • On a $GT_FLOW_KIND branch: $GT_FLOW_BRANCH (version $GT_FLOW_VERSION)"
+        if is_on_remote heads "$GT_FLOW_BRANCH"; then
+            log_warn "      pushed to $REMOTE — will NOT be deleted"
+        fi
+    fi
+
+    if [ -n "$GT_LOCAL_TAGS" ]; then
+        anything=true
+        log_info "  • Local-only tags for $GT_FLOW_VERSION:"
+        printf '%s\n' "$GT_LOCAL_TAGS" | while IFS= read -r t; do
+            [ -n "$t" ] && log_empty "      $t"
+        done
+    fi
+
+    if [ -n "$GT_TEMP_BRANCHES" ]; then
+        anything=true
+        log_info "  • Orphaned sync branches:"
+        printf '%s\n' "$GT_TEMP_BRANCHES" | while IFS= read -r b; do
+            [ -n "$b" ] && log_empty "      $b"
+        done
+    fi
+
+    if [ -n "$GT_STALE_LOCKS" ]; then
+        anything=true
+        log_info "  • Lock(s) held: $(printf '%s' "$GT_STALE_LOCKS" | tr '\n' ' ')"
+    fi
+
+    if [ "$anything" = false ]; then
+        log_info "  ✅ Nothing to abort — no flow is in progress."
+        return 1
+    fi
+    log_empty ""
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Undo
+# ---------------------------------------------------------------------------
+do_abort() {
+    local undone=0
+
+    if [ "$GT_MERGE_IN_PROGRESS" = true ]; then
+        if confirm_action "Abort the in-progress merge?" true; then
+            if git merge --abort 2>/dev/null; then
+                log_info "✓ Merge aborted"; undone=$((undone + 1))
+            else
+                log_error "Could not abort the merge; resolve it by hand"
+            fi
+        fi
+    fi
+
+    if [ -n "$GT_LOCAL_TAGS" ]; then
+        log_empty ""
+        log_warn "These tags exist only locally and can be safely removed:"
+        printf '%s\n' "$GT_LOCAL_TAGS" | sed 's/^/    /' >&2
+        if confirm_action "Delete them?"; then
+            local t
+            while IFS= read -r t; do
+                [ -z "$t" ] && continue
+                if git tag -d "$t" >/dev/null 2>&1; then
+                    log_info "✓ Deleted tag $t"; undone=$((undone + 1))
+                else
+                    log_warn "✗ Could not delete tag $t"
+                fi
+            done <<< "$GT_LOCAL_TAGS"
+        fi
+    fi
+
+    if [ -n "$GT_TEMP_BRANCHES" ]; then
+        log_empty ""
+        if confirm_action "Delete the orphaned sync branches?" true; then
+            local b
+            while IFS= read -r b; do
+                [ -z "$b" ] && continue
+                [ "$b" = "$(get_current_branch)" ] && git checkout -q "$DEVELOP_BRANCH" 2>/dev/null
+                git branch -D "$b" >/dev/null 2>&1 && { log_info "✓ Deleted $b"; undone=$((undone + 1)); }
+            done <<< "$GT_TEMP_BRANCHES"
+        fi
+    fi
+
+    if [ -n "$GT_FLOW_BRANCH" ]; then
+        log_empty ""
+        if is_on_remote heads "$GT_FLOW_BRANCH"; then
+            log_warn "$GT_FLOW_BRANCH exists on $REMOTE and will NOT be deleted."
+            log_info "Others may already have it; removing it is a decision for your team."
+        elif confirm_action "Delete the local $GT_FLOW_KIND branch $GT_FLOW_BRANCH?"; then
+            git checkout -q "$DEVELOP_BRANCH" 2>/dev/null
+            if git branch -D "$GT_FLOW_BRANCH" >/dev/null 2>&1; then
+                log_info "✓ Deleted $GT_FLOW_BRANCH"; undone=$((undone + 1))
+            else
+                log_warn "✗ Could not delete $GT_FLOW_BRANCH"
+            fi
+        fi
+    fi
+
+    if [ -n "$GT_STALE_LOCKS" ]; then
+        log_empty ""
+        if confirm_action "Release held lock(s)?" true; then
+            rm -rf "$(gt_git_path git-trident-locks)"/* 2>/dev/null
+            log_info "✓ Locks released"; undone=$((undone + 1))
+        fi
+    fi
+
+    log_empty ""
+    log_info "═════════════════════════════════════════"
+    if [ "$undone" -eq 0 ]; then
+        log_info "Nothing was changed."
+    else
+        log_info "🎉 Undid $undone item(s). Run 'git trident doctor' to confirm."
+    fi
+    return 0
+}
+
+usage() {
+    cat <<EOF
+Usage: git trident abort [--dry-run]
+
+Unwind a partially-completed release or hotfix.
+
+  --dry-run   Report the current state and stop; change nothing.
+
+Only LOCAL, UNPUSHED refs are removed. Anything already on the remote is
+reported but left alone, because other people may already have it.
+EOF
+}
+
+main() {
+    # The dispatcher consumes a global --dry-run and exports GT_DRY_RUN, so the
+    # flag never reaches this script's own parser. Without honouring it here,
+    # `git trident abort --dry-run` performed a REAL abort — deleting tags and
+    # branches the user had asked only to be shown.
+    local dry_run=false
+    gt_is_dry_run && dry_run=true
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run|--check) dry_run=true ;;
+            -h|--help|help)    usage; exit 0 ;;
+            *) log_error "Unknown option: $1"; usage; exit 1 ;;
+        esac
+        shift
+    done
+
+    log_info "🛟 Git Trident Abort"
+    log_info "═════════════════════════════════════════"
+    log_empty ""
+
+    inspect_state
+    if ! report_state; then
+        exit 0
+    fi
+
+    if [ "$dry_run" = true ]; then
+        log_info "Dry run — nothing was changed."
+        log_info "Re-run without --dry-run to undo the items above."
+        exit 0
+    fi
+
+    do_abort
+}
+
+main "$@"

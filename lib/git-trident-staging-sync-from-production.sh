@@ -160,45 +160,6 @@ get_staging_tags_for_production_sync() {
     echo "$candidate_tags" | sed '/^$/d'
 }
 
-find_outdated_staging_tags() {
-    local production_version="$1"
-    local production_tag="${PRODUCTION_TAG_PREFIX}${production_version}"
-
-    log_debug "Finding staging tags outdated by production $production_version..."
-
-    # Get ALL staging tags that should receive production changes
-    local all_candidate_tags=$(get_staging_tags_for_production_sync "$production_version")
-
-    if [ -z "$all_candidate_tags" ]; then
-        echo ""  # Return empty string
-        return 0
-    fi
-
-    # Get only the LATEST RC for each base version
-    local latest_rcs=$(get_latest_rc_per_base_version "$all_candidate_tags")
-
-    if [ -z "$latest_rcs" ]; then
-        echo ""  # Return empty string
-        return 0
-    fi
-
-    # Find which latest RCs don't include production changes
-    local outdated_latest_tags=""
-    local production_commit=$(git rev-parse "$production_tag")
-
-    for staging_tag in $latest_rcs; do
-        # Check if this latest version includes the production changes
-        if ! git merge-base --is-ancestor "$production_commit" "$staging_tag" 2>/dev/null; then
-            outdated_latest_tags="${outdated_latest_tags}${staging_tag}"$'\n'
-            log_debug "Found outdated latest RC: $staging_tag"
-        else
-            log_debug "Latest RC is up-to-date: $staging_tag"
-        fi
-    done
-
-    echo "$outdated_latest_tags" | sed '/^$/d'
-}
-
 # =============================================================================
 # SINGLE VERSION PROCESSING (WITH PLATFORM SUPPORT)
 # =============================================================================
@@ -209,6 +170,14 @@ create_rebase_temp_branch() {
 
     # Create temp branch from the outdated RC tag (not from staging branch)
     local temp_branch="temp-rebase-${base_version//[^a-zA-Z0-9_-]/-}"
+
+    # Record it globally so an interrupted run can clean it up. Without this a
+    # killed or failed sync leaves orphan temp-* branches behind, and the next
+    # run fails because `git checkout -b` cannot recreate an existing branch.
+    # Read by handle_exit in bin/git-trident-staging-sync-tags; static analysis
+    # cannot follow that across the source boundary.
+    # shellcheck disable=SC2034
+    GT_TEMP_BRANCH="$temp_branch"
 
     verify_step "Creating temporary branch from outdated RC: $latest_rc_tag" \
         "git checkout -b '$temp_branch' '$latest_rc_tag'" \
@@ -332,6 +301,8 @@ process_single_staging_version() {
             # Clean up temp branch on failure
             git checkout "$STAGING_BRANCH" >/dev/null 2>&1
             git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
             return 1
         fi
 
@@ -339,6 +310,8 @@ process_single_staging_version() {
         if ! verify_production_changes_included "$temp_branch" "$production_commit"; then
             git checkout "$STAGING_BRANCH" >/dev/null 2>&1
             git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
             return 1
         fi
 
@@ -348,6 +321,8 @@ process_single_staging_version() {
         # Clean up temp branch
         git checkout "$STAGING_BRANCH" >/dev/null 2>&1
         git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
     fi
 
     # Update staging branch with the new tag
@@ -367,10 +342,13 @@ process_single_staging_version() {
 show_rebase_summary() {
     local production_version="$1"
     shift
-    local latest_rcs_to_rebase=("$@")
+    # Renamed from latest_rcs_to_rebase: rebase_staging_releases uses that
+    # name for a STRING, and the same identifier holding two types in one file is
+    # confusing to read and to analyse (SC2178/SC2128).
+    local rcs_to_rebase=("$@")
 
     log_info "🔄 Staging releases that need rebase (latest RC per base version only):"
-    for tag in "${latest_rcs_to_rebase[@]}"; do
+    for tag in ${rcs_to_rebase[@]+"${rcs_to_rebase[@]}"}; do
         local platform_info=""
         if is_platform_specific_mode; then
             local version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
@@ -402,7 +380,7 @@ show_rebase_summary() {
 
     # Extract base versions from tags
     local base_versions_list=""
-    for tag in "${latest_rcs_to_rebase[@]}"; do
+    for tag in ${rcs_to_rebase[@]+"${rcs_to_rebase[@]}"}; do
         local base_version=$(extract_base_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
         base_versions_list="$base_versions_list$base_version "
     done
@@ -415,27 +393,6 @@ show_rebase_summary() {
     log_info "    1. Tag-X + production → Tag-X+1"
     log_info "    2. Tag-Y + Tag-X+1 → Tag-Y+1"
     log_empty ""
-}
-
-process_rebase_versions() {
-    local production_version="$1"
-    local production_commit="$2"
-    shift 2
-    local latest_rcs_to_rebase=("$@")
-
-    local rebased_count=0
-    local total_count=${#latest_rcs_to_rebase[@]}
-
-    # Process each base version's latest RC
-    for latest_rc_tag in "${latest_rcs_to_rebase[@]}"; do
-        if process_single_staging_version "$latest_rc_tag" "$production_version" "$production_commit"; then
-            rebased_count=$((rebased_count + 1))
-        fi
-        echo ""
-    done
-
-    # Use array approach: return space-separated values
-    echo "$rebased_count $total_count"
 }
 
 show_rebase_completion_summary() {
@@ -581,7 +538,7 @@ rebase_staging_releases() {
 # DETECTION OPERATIONS (CHECK-ONLY MODE) WITH PLATFORM SUPPORT
 # =============================================================================
 
-show_detection_analysis() {
+prod_sync_show_detection_analysis() {
     local latest_rcs_to_check="$1"
     local production_version="$2"
     local production_tag="$3"
@@ -672,6 +629,14 @@ show_detection_summary() {
     fi
 }
 
+# Exit codes:
+#   0  everything is up to date, nothing to do
+#   1  one or more staging releases need rebasing
+#   2  the check could not be performed (bad or deprecated production tag)
+#
+# 1 and 2 used to be the same value, so a caller could not tell "work needed"
+# from "I could not look". verify-sync consequently reported "Staging releases
+# may need rebase" whenever the production tag was simply unusable.
 check_staging_releases_need_rebase() {
     local production_version="$1"
     local production_tag="${PRODUCTION_TAG_PREFIX}${production_version}"
@@ -680,7 +645,7 @@ check_staging_releases_need_rebase() {
 
     # Validate prerequisites
     if ! validate_production_sync_prerequisites "$production_version"; then
-        return 1
+        return 2
     fi
 
     # Get ALL staging tags that should receive production changes (based on platform rules)
@@ -722,7 +687,7 @@ check_staging_releases_need_rebase() {
 
     # Analyze and get results
     local analysis_result
-    analysis_result=$(show_detection_analysis "$outdated_latest_tags" "$production_version" "$production_tag")
+    analysis_result=$(prod_sync_show_detection_analysis "$outdated_latest_tags" "$production_version" "$production_tag")
 
     # Parse the result: first two values are counts, next two are production info, rest are tags
     IFS=' ' read -r affected_count total_count prod_version prod_tag remaining <<< "$analysis_result"

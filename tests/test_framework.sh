@@ -9,6 +9,9 @@ export FAILED_TESTS=0
 # Log colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+# Used by suites that source this framework (e.g. skip notices).
+# shellcheck disable=SC2034
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Print helper

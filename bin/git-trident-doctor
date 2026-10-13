@@ -1,0 +1,319 @@
+#!/bin/bash
+# Git Trident Doctor — one command that answers "is this set up correctly?"
+#
+# The same question previously required three commands with different output
+# shapes and different exit-code conventions:
+#
+#   git trident version health   tooling and installation
+#   git trident config validate  configuration
+#   git trident verify-sync      repository state
+#
+# Nothing told you which to run first, and a problem in an earlier layer makes
+# the later ones report confusing nonsense — an unusable production tag, for
+# instance, surfaces as "staging releases may need rebase". Doctor runs them in
+# dependency order and stops describing downstream symptoms once an upstream
+# layer is broken.
+
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See CONTRIBUTING.md (Bash 3.2 cookbook).
+set -o pipefail
+
+# --- Git Trident entry-point preamble (A1a) ---------------------------------
+# Resolve this script's REAL location, following symlinks, so the tool works
+# when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)
+# and when installed to a custom directory.
+#
+# Portability notes (macOS / Linux / Windows Git Bash):
+#   * plain `readlink`, never `readlink -f` — `-f` is GNU-only and missing on
+#     macOS before 12.3; plain readlink is POSIX and present on BSD and MSYS2.
+#   * the loop follows symlink CHAINS and relative link targets.
+#   * on Windows, `ln -s` normally copies rather than links, so [ -L ] is false
+#     and the loop is simply skipped — correct behaviour either way.
+GT_SELF="${BASH_SOURCE[0]}"
+while [ -L "$GT_SELF" ]; do
+    GT_LINK_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+    GT_SELF="$(readlink "$GT_SELF")"
+    case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# GT_INSTALL_ROOT is part of the shared entry-point contract.
+# shellcheck disable=SC2034
+GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+# ----------------------------------------------------------------------------
+
+export SUPPRESS_CONFIG_ERRORS=true
+source "$SCRIPT_DIR/../lib/git-trident-common.sh" --no-init
+source "$SCRIPT_DIR/../lib/git-trident-version-utils.sh"
+unset SUPPRESS_CONFIG_ERRORS
+
+GT_DOCTOR_PROBLEMS=0
+GT_DOCTOR_WARNINGS=0
+
+section() {
+    log_empty ""
+    log_info "── $1 ─────────────────────────────────────"
+}
+ok()    { log_info  "  ✅ $1"; }
+warn()  { log_warn  "  ⚠️  $1"; GT_DOCTOR_WARNINGS=$((GT_DOCTOR_WARNINGS + 1)); }
+bad()   { log_error "  ❌ $1"; GT_DOCTOR_PROBLEMS=$((GT_DOCTOR_PROBLEMS + 1)); }
+hint()  { log_info  "     → $1"; }
+
+# ---------------------------------------------------------------------------
+# Layer 1 — environment
+# ---------------------------------------------------------------------------
+check_environment() {
+    section "Environment"
+
+    local bash_version="${BASH_VERSION%%(*}"
+    ok "bash $bash_version ($(command -v bash))"
+    case "$BASH_VERSION" in
+        [123].*) ok "Running the Bash 3.2 compatibility floor" ;;
+        *)       log_info "     (floor is 3.2; this shell is newer, which is fine)" ;;
+    esac
+
+    local tool
+    for tool in git grep sed awk curl tar date; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            ok "$tool"
+        else
+            bad "$tool is not installed"
+            hint "Git Trident needs it for day-to-day operations"
+        fi
+    done
+
+    local git_version
+    git_version="$(git --version 2>/dev/null | awk '{print $3}')"
+    [ -n "$git_version" ] && log_info "     git $git_version"
+}
+
+# ---------------------------------------------------------------------------
+# Layer 2 — installation
+# ---------------------------------------------------------------------------
+check_installation() {
+    section "Installation"
+
+    ok "Install root: $GT_INSTALL_ROOT"
+
+    local d
+    for d in bin lib templates hooks; do
+        if [ -d "$GT_INSTALL_ROOT/$d" ]; then
+            ok "$d/"
+        else
+            bad "$d/ is missing from the installation"
+        fi
+    done
+
+    local missing_exec=""
+    local f
+    for f in "$GT_INSTALL_ROOT"/bin/git-trident*; do
+        [ -f "$f" ] || continue
+        [ -x "$f" ] || missing_exec="$missing_exec $(basename "$f")"
+    done
+    if [ -z "$missing_exec" ]; then
+        ok "All bin/ entry points are executable"
+    else
+        bad "Not executable:$missing_exec"
+        hint "chmod +x \"$GT_INSTALL_ROOT\"/bin/*"
+    fi
+
+    if command -v git-trident >/dev/null 2>&1; then
+        ok "git-trident is on PATH ($(command -v git-trident))"
+    else
+        warn "git-trident is not on PATH"
+        hint "Add $GT_INSTALL_ROOT/bin to PATH, or re-run install.sh"
+    fi
+
+    log_info "     version $TRIDENT_VERSION"
+}
+
+# ---------------------------------------------------------------------------
+# Layer 3 — configuration
+# ---------------------------------------------------------------------------
+# Returns non-zero when configuration is unusable, so repository checks are
+# skipped rather than reporting symptoms of a cause already identified.
+check_configuration() {
+    section "Configuration"
+
+    if ! gt_resolve_repo_context; then
+        warn "Not inside a Git repository"
+        hint "Repository checks skipped"
+        return 1
+    fi
+    ok "Repository: $GT_REPO_ROOT"
+
+    if [ -f "$HOME/$GLOBAL_CONFIG_FILE_NAME" ]; then
+        ok "Global config: ~/$GLOBAL_CONFIG_FILE_NAME"
+    else
+        warn "No global config (~/$GLOBAL_CONFIG_FILE_NAME)"
+        hint "Re-run install.sh to create it"
+    fi
+
+    local project_config; project_config="$(gt_repo_path "$CONFIG_FILE_NAME")"
+    [ -f "$project_config" ] || project_config="$(gt_repo_path ".$CONFIG_FILE_NAME")"
+    if [ ! -f "$project_config" ]; then
+        bad "No project config in this repository"
+        hint "Run: git trident config init"
+        return 1
+    fi
+    ok "Project config: ${project_config#"$GT_REPO_ROOT"/}"
+
+    if ! load_project_config >/dev/null 2>&1; then
+        bad "Project config failed to load"
+        hint "Run: git trident config validate"
+        return 1
+    fi
+
+    local var missing=0
+    for var in "${REQUIRED_CONFIG_VARS[@]}"; do
+        [ -n "${!var:-}" ] || { bad "$var is not set"; missing=$((missing + 1)); }
+    done
+    if [ "$missing" -eq 0 ]; then
+        ok "All required keys present"
+    else
+        hint "Run: git trident config validate"
+        return 1
+    fi
+
+    if is_platform_specific_mode; then
+        ok "Mode: multi-platform (${PLATFORMS})"
+    else
+        ok "Mode: single-environment"
+    fi
+
+    local schema="${CONFIG_SCHEMA_VERSION:-}"
+    if [ -z "$schema" ]; then
+        warn "Config has no CONFIG_SCHEMA_VERSION (assuming 1)"
+    elif [ "$schema" != "$CONFIG_SCHEMA_CURRENT" ]; then
+        warn "Config schema $schema; current is $CONFIG_SCHEMA_CURRENT"
+    fi
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Layer 4 — repository state
+# ---------------------------------------------------------------------------
+check_repository() {
+    section "Repository"
+
+    local b var
+    for var in PRODUCTION_BRANCH STAGING_BRANCH DEVELOP_BRANCH; do
+        b="${!var:-}"
+        [ -z "$b" ] && continue
+        if git show-ref --verify --quiet "refs/heads/$b"; then
+            ok "Branch $b"
+        else
+            bad "Branch $b does not exist locally"
+            hint "git checkout -b $b"
+        fi
+    done
+
+    if git remote get-url "$REMOTE" >/dev/null 2>&1; then
+        ok "Remote $REMOTE"
+        if git ls-remote "$REMOTE" >/dev/null 2>&1; then
+            ok "Remote is reachable"
+        else
+            warn "Remote $REMOTE is not reachable"
+            hint "Offline, or credentials are not set up"
+        fi
+    else
+        bad "Remote '$REMOTE' is not configured"
+    fi
+
+    local prod_count staging_count
+    prod_count=$(count_lines "$(git tag -l "${PRODUCTION_TAG_PREFIX}*" 2>/dev/null)")
+    staging_count=$(count_lines "$(git tag -l "${STAGING_TAG_PREFIX}*" 2>/dev/null)")
+    log_info "     tags: $prod_count production, $staging_count staging"
+
+    local temps
+    temps=$(count_lines "$(git for-each-ref --format='%(refname:short)' \
+                'refs/heads/temp-rebase-*' 'refs/heads/temp-propagate-*' 2>/dev/null)")
+    if [ "$temps" -gt 0 ]; then
+        warn "$temps orphaned sync branch(es) from an interrupted run"
+        hint "Run: git trident cleanup prune temp"
+    fi
+
+    if [ -f "$(gt_git_path MERGE_HEAD)" ]; then
+        bad "A merge is in progress"
+        hint "Finish it with 'git commit', or abandon it with 'git merge --abort'"
+    fi
+
+    local locks
+    locks=$(count_lines "$(ls "$(gt_git_path git-trident-locks)" 2>/dev/null)")
+    if [ "$locks" -gt 0 ]; then
+        warn "$locks stale lock(s) in $(gt_git_path git-trident-locks)"
+        hint "Safe to delete if no Git Trident command is running"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Layer 5 — hooks
+# ---------------------------------------------------------------------------
+check_hooks() {
+    section "Hooks"
+
+    local hooks_path
+    hooks_path="$(git config --get core.hooksPath 2>/dev/null)"
+    if [ -z "$hooks_path" ]; then
+        log_info "  ℹ️  Hooks are not installed in this repository"
+        hint "Install with: git trident hooks install-local"
+        return 0
+    fi
+
+    # Compare PHYSICAL paths. On macOS /var is a symlink to /private/var, so a
+    # stored core.hooksPath of /var/... never string-matches the
+    # /private/var/... that `git rev-parse --absolute-git-dir` returns, and an
+    # ordinary default setup was reported as pointing somewhere unexpected.
+    local resolved_hooks resolved_install default_hooks
+    resolved_hooks="$(cd -P "$hooks_path" 2>/dev/null && pwd)" || resolved_hooks="$hooks_path"
+    resolved_install="$(cd -P "$GT_INSTALL_ROOT/hooks" 2>/dev/null && pwd)" || resolved_install="$GT_INSTALL_ROOT/hooks"
+    default_hooks="$(cd -P "$(gt_git_path hooks)" 2>/dev/null && pwd)" || default_hooks="$(gt_git_path hooks)"
+
+    local hooks_path="$resolved_hooks"
+    if [ "$hooks_path" = "$resolved_install" ]; then
+        ok "core.hooksPath -> this installation"
+    elif [ "$hooks_path" = "$default_hooks" ]; then
+        log_info "  ℹ️  core.hooksPath is the repository default (Git Trident hooks not installed)"
+        hint "Install with: git trident hooks install-local"
+        return 0
+    else
+        warn "core.hooksPath points at another location: $hooks_path"
+        hint "Expected: $GT_INSTALL_ROOT/hooks"
+    fi
+
+    if [ "${HOOKS_ENABLED:-false}" = "true" ]; then
+        ok "HOOKS_ENABLED=true"
+    else
+        log_info "  ℹ️  HOOKS_ENABLED=false (hooks installed but inactive)"
+        hint "Enable with: git trident hooks enable"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+main() {
+    log_info "🩺 Git Trident Doctor"
+    log_info "═════════════════════════════════════════"
+
+    check_environment
+    check_installation
+
+    if check_configuration; then
+        check_repository
+        check_hooks
+    fi
+
+    log_empty ""
+    log_info "═════════════════════════════════════════"
+    if [ "$GT_DOCTOR_PROBLEMS" -gt 0 ]; then
+        log_error "❌ $GT_DOCTOR_PROBLEMS problem(s), $GT_DOCTOR_WARNINGS warning(s)"
+        exit 1
+    elif [ "$GT_DOCTOR_WARNINGS" -gt 0 ]; then
+        log_warn "⚠️  Healthy, with $GT_DOCTOR_WARNINGS warning(s)"
+        exit 0
+    fi
+    log_info "✅ Everything checks out"
+    exit 0
+}
+
+main "$@"

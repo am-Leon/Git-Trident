@@ -2,7 +2,36 @@
 # Git Trident Hooks - Hook Management CLI
 # Manage Git Trident Tools hooks installation and configuration
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See CONTRIBUTING.md (Bash 3.2 cookbook).
+set -o pipefail
+
+# --- Git Trident entry-point preamble (A1a) ---------------------------------
+# Resolve this script's REAL location, following symlinks, so the tool works
+# when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)
+# and when installed to a custom directory.
+#
+# Portability notes (macOS / Linux / Windows Git Bash):
+#   * plain `readlink`, never `readlink -f` — `-f` is GNU-only and missing on
+#     macOS before 12.3; plain readlink is POSIX and present on BSD and MSYS2.
+#   * the loop follows symlink CHAINS and relative link targets.
+#   * on Windows, `ln -s` normally copies rather than links, so [ -L ] is false
+#     and the loop is simply skipped — correct behaviour either way.
+GT_SELF="${BASH_SOURCE[0]}"
+while [ -L "$GT_SELF" ]; do
+    GT_LINK_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+    GT_SELF="$(readlink "$GT_SELF")"
+    case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# GT_INSTALL_ROOT is part of the shared entry-point contract: every script sets
+# it, and git-trident-hooks (discover_install_dir) and git-trident-version
+# (passing the install root to the updater) read it. Scripts that do not read it
+# still define it so the preamble stays identical everywhere.
+# shellcheck disable=SC2034
+GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+# ----------------------------------------------------------------------------
 
 # =============================================================================
 # DYNAMIC PATH DISCOVERY
@@ -10,25 +39,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Try to discover the installation directory
 discover_install_dir() {
-    # 1. Check if we're running from development directory
-    if [[ -f "$SCRIPT_DIR/../lib/git-trident-common.sh" ]]; then
-        echo "$(cd "$SCRIPT_DIR/.." && pwd)"
+    # 1. GT_INSTALL_ROOT comes from the entry-point preamble, which has already
+    #    followed any symlinks. This is the authoritative answer and covers the
+    #    development checkout, a default install, a custom install path, and a
+    #    symlinked entry point alike.
+    if [[ -f "$GT_INSTALL_ROOT/lib/git-trident-common.sh" ]]; then
+        echo "$GT_INSTALL_ROOT"
         return 0
     fi
 
-    # 2. Check if we're in a symlinked installation
-    if [[ -L "$SCRIPT_DIR/git-trident-hooks" ]] || [[ -L "$0" ]]; then
-        local link_target=$(readlink -f "$SCRIPT_DIR/git-trident-hooks" 2>/dev/null || readlink -f "$0" 2>/dev/null)
-        if [[ -n "$link_target" ]]; then
-            local possible_dir=$(dirname "$(dirname "$link_target")")
-            if [[ -f "$possible_dir/lib/git-trident-common.sh" ]]; then
-                echo "$possible_dir"
-                return 0
-            fi
-        fi
-    fi
+    # NOTE: a `readlink -f` branch used to live here. It is redundant now that
+    # the preamble resolves symlinks, and it was GNU-only — `readlink -f` does
+    # not exist on macOS before 12.3, so the branch could not work on the very
+    # platform it was written for.
 
-    # 3. Check common installation locations
+    # 2. Check common installation locations
     local common_locations=(
         "$HOME/.git-trident"
         "/usr/local/share/git-trident"
@@ -42,7 +67,7 @@ discover_install_dir() {
         fi
     done
 
-    # 4. Last resort: check PATH for git-trident command
+    # 3. Last resort: check PATH for git-trident command
     local tools_path=$(command -v git-trident 2>/dev/null)
     if [[ -n "$tools_path" ]]; then
         local possible_dir=$(dirname "$(dirname "$tools_path")")
@@ -243,72 +268,93 @@ uninstall_local() {
     fi
 }
 
-# Enable hooks in configuration (set HOOKS_ENABLED=true)
-enable_hooks() {
-    local config_target="${1:-auto}"
-    local config_file=""
+# =============================================================================
+# CONFIG KEY WRITER (shared by enable_hooks / disable_hooks)
+# =============================================================================
 
-    case "$config_target" in
-        "global")
-            config_file="$HOME/.git-trident-config"
-            log_step "Enabling hooks in global configuration..."
-            ;;
-        "project"|"local")
-            config_file="./git-trident-config"
-            log_step "Enabling hooks in project configuration..."
-            ;;
-        "auto"|*)
-            # Auto-detect: prefer project config if exists, else global
-            if [[ -f "./git-trident-config" ]]; then
-                config_file="./git-trident-config"
-                log_step "Enabling hooks in project configuration..."
-            elif [[ -f "$HOME/.git-trident-config" ]]; then
-                config_file="$HOME/.git-trident-config"
-                log_step "Enabling hooks in global configuration..."
-            else
-                log_error "No configuration file found"
-                log_info "Create a configuration file first:"
-                log_info "  cp $HOME/.git-trident-config ./git-trident-config  # Project"
-                log_info "  # or edit: $HOME/.git-trident-config                  # Global"
-                return 1
-            fi
-            ;;
-    esac
+# Set KEY=VALUE in a config file, creating the key when absent, and VERIFY it.
+#
+# Replaces a pattern that silently did nothing:
+#     if grep -q "HOOKS_ENABLED=" "$config_file"; then
+#         sed -i.bak 's/^HOOKS_ENABLED=.*/HOOKS_ENABLED=true/' "$config_file"
+#         log_info "✓ Updated HOOKS_ENABLED=true"     # logged unconditionally
+#
+# The grep is unanchored, so it matched a COMMENT in the shipped template:
+#     # Granular hook control (requires HOOKS_ENABLED=true in global config).
+# which selected the "update existing" branch. The sed is anchored to ^, so it
+# could not touch a line starting with '#'. The file was unchanged and success
+# was reported anyway — `git trident hooks enable` was a complete no-op.
+gt_config_set_key() {
+    local config_file="$1" key="$2" value="$3"
 
-    if [[ ! -f "$config_file" ]]; then
-        log_error "Configuration file not found: $config_file"
+    [[ -f "$config_file" ]] || { log_error "Configuration file not found: $config_file"; return 1; }
+
+    # Anchored: match a real ASSIGNMENT, never a comment or a longer key.
+    if grep -qE "^[[:space:]]*${key}=" "$config_file"; then
+        sed_in_place "$config_file" "s|^[[:space:]]*${key}=.*|${key}=${value}|"
+    else
+        printf '\n# Set by: git trident hooks\n%s=%s\n' "$key" "$value" >> "$config_file"
+    fi
+
+    # Verify rather than assume. sed is silent when its pattern does not match.
+    local actual
+    actual=$(grep -E "^[[:space:]]*${key}=" "$config_file" | tail -1 | cut -d= -f2-)
+    actual="${actual%\"}"; actual="${actual#\"}"
+    if [[ "$actual" != "$value" ]]; then
+        log_error "Failed to set ${key}=${value} in: $config_file"
+        log_error "   File currently reports: ${key}=${actual:-<unset>}"
         return 1
     fi
 
-    # Update HOOKS_ENABLED in config file
-    if grep -q "HOOKS_ENABLED=" "$config_file"; then
-        # Update existing setting
-        sed -i.bak 's/^HOOKS_ENABLED=.*/HOOKS_ENABLED=true/' "$config_file"
-        rm -f "$config_file.bak" 2>/dev/null
-        log_info "✓ Updated HOOKS_ENABLED=true in: $config_file"
-    else
-        # Add setting to GIT HOOKS CONFIGURATION section
-        if grep -q "# =============================================================================
-# GIT HOOKS CONFIGURATION" "$config_file"; then
-            # Insert after hooks section header
-            sed -i.bak '/# GIT HOOKS CONFIGURATION/a\
-HOOKS_ENABLED=true' "$config_file"
-        else
-            # Add hooks section
-            echo "" >> "$config_file"
-            echo "# =============================================================================" >> "$config_file"
-            echo "# GIT HOOKS CONFIGURATION" >> "$config_file"
-            echo "# =============================================================================" >> "$config_file"
-            echo "" >> "$config_file"
-            echo "# Enable/disable hooks (true/false)" >> "$config_file"
-            echo "HOOKS_ENABLED=true" >> "$config_file"
+    log_info "✓ ${key}=${value} in: $config_file"
+    return 0
+}
+
+# Which config file should own a given key?
+#
+# HOOKS_ENABLED is a GLOBAL-ONLY key (see GLOBAL_ONLY_CONFIG_KEYS in
+# git-trident-common.sh). load_project_config deliberately ignores global-only
+# keys found in a project config and warns about them — so writing it to the
+# project file, as "auto" previously preferred, could never take effect.
+gt_config_file_for_key() {
+    local key="$1" requested="${2:-auto}"
+    local global_config="$HOME/$GLOBAL_CONFIG_FILE_NAME"
+    local project_config; project_config="$(gt_repo_path "$CONFIG_FILE_NAME")"
+
+    local is_global_only=false k
+    for k in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+        [[ "$k" == "$key" ]] && { is_global_only=true; break; }
+    done
+
+    if [[ "$is_global_only" == "true" ]]; then
+        if [[ "$requested" == "project" || "$requested" == "local" ]]; then
+            log_warn "$key is a global-only setting; writing to the global config instead."
+            log_warn "   (a project config cannot override it — it would be ignored)"
         fi
-        rm -f "$config_file.bak" 2>/dev/null
-        log_info "✓ Added HOOKS_ENABLED=true to: $config_file"
+        [[ -f "$global_config" ]] || touch "$global_config"
+        echo "$global_config"
+        return 0
     fi
 
+    case "$requested" in
+        global)          echo "$global_config" ;;
+        project|local)   echo "$project_config" ;;
+        *)               if [[ -f "$project_config" ]]; then echo "$project_config";
+                         else echo "$global_config"; fi ;;
+    esac
+}
+
+# Enable hooks in configuration (set HOOKS_ENABLED=true)
+enable_hooks() {
+    local config_target="${1:-auto}"
+    local config_file
+    config_file="$(gt_config_file_for_key "HOOKS_ENABLED" "$config_target")" || return 1
+
+    log_step "Enabling hooks in: $config_file"
+    gt_config_set_key "$config_file" "HOOKS_ENABLED" "true" || return 1
+
     log_empty ""
-    log_info "Hooks are now ENABLED in: $(basename "$config_file")"
+    log_info "Hooks are now ENABLED."
     log_info "The next git operation will validate using Git Trident Tools rules."
     return 0
 }
@@ -316,48 +362,14 @@ HOOKS_ENABLED=true' "$config_file"
 # Disable hooks in configuration (set HOOKS_ENABLED=false)
 disable_hooks() {
     local config_target="${1:-auto}"
-    local config_file=""
+    local config_file
+    config_file="$(gt_config_file_for_key "HOOKS_ENABLED" "$config_target")" || return 1
 
-    case "$config_target" in
-        "global")
-            config_file="$HOME/.git-trident-config"
-            log_step "Disabling hooks in global configuration..."
-            ;;
-        "project"|"local")
-            config_file="./git-trident-config"
-            log_step "Disabling hooks in project configuration..."
-            ;;
-        "auto"|*)
-            # Auto-detect
-            if [[ -f "./git-trident-config" ]]; then
-                config_file="./git-trident-config"
-                log_step "Disabling hooks in project configuration..."
-            elif [[ -f "$HOME/.git-trident-config" ]]; then
-                config_file="$HOME/.git-trident-config"
-                log_step "Disabling hooks in global configuration..."
-            else
-                log_error "No configuration file found"
-                return 1
-            fi
-            ;;
-    esac
-
-    if [[ ! -f "$config_file" ]]; then
-        log_error "Configuration file not found: $config_file"
-        return 1
-    fi
-
-    # Update HOOKS_ENABLED in config file
-    if grep -q "HOOKS_ENABLED=" "$config_file"; then
-        sed -i.bak 's/^HOOKS_ENABLED=.*/HOOKS_ENABLED=false/' "$config_file"
-        rm -f "$config_file.bak" 2>/dev/null
-        log_info "✓ Updated HOOKS_ENABLED=false in: $config_file"
-    else
-        log_info "✓ Hooks already disabled (HOOKS_ENABLED not set)"
-    fi
+    log_step "Disabling hooks in: $config_file"
+    gt_config_set_key "$config_file" "HOOKS_ENABLED" "false" || return 1
 
     log_empty ""
-    log_info "Hooks are now DISABLED in: $(basename "$config_file")"
+    log_info "Hooks are now DISABLED."
     log_info "Git operations will skip Git Trident Tools validation."
     return 0
 }

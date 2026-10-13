@@ -52,19 +52,19 @@ Git Trident enforces and automates a **Three-Branch Workflow**:
 
 ### Staging Lifecycle
 
-1. **Start**: A release candidate branch (`release/staging/<version>`) is created from `develop`. The developer prepares
+1. **Start**: A release candidate branch (`release/stg/<version>`) is created from `develop`. The developer prepares
    the release on this branch (e.g. modifying version files, updating configuration, writing QA notes).
 2. **Finish**: When adjustments are committed, the release is finished. This creates the first staging RC tag (e.g.,
    `staging/1.2.0-rc-01`), merges the release branch into `staging`, and syncs everything back to `develop`.
 3. **Build & QA**: The developer builds the project from this RC tag and shares the build output (artifact) with the QA
    team.
 4. **Iterate (Staging Hotfixes)**: If QA finds bugs in the build, the developer starts a staging hotfix (
-   `hotfix/staging/<version>`) from the latest RC tag, applies changes, and completes the hotfix to increment the RC
+   `hotfix/stg/<version>`) from the latest RC tag, applies changes, and completes the hotfix to increment the RC
    tag (e.g., `rc-01` → `rc-02`) for a new QA build iteration.
 
 ### Production Lifecycle
 
-1. **Start**: A production release branch (`release/prod-<version>`) is created, promoting the latest validated staging
+1. **Start**: A production release branch (`release/prod/<version>`) is created, promoting the latest validated staging
    RC of that version.
 2. **Finish**: The release branch is merged into `production`, a production tag is created (e.g., `production/1.2.0`),
    and changes are automatically synced back to both `staging` and `develop`.
@@ -128,7 +128,7 @@ git commit -m "chore: Add git-trident project configuration"
 Create and prepare the first release candidate for version `1.0.0`:
 
 ```bash
-# 1. Start the staging release (creates release/staging/1.0.0)
+# 1. Start the staging release (creates release/stg/1.0.0)
 git trident staging release start 1.0.0
 
 # 2. (Developer makes final adjustments: updates codes, versions, QA notes, etc. on the branch)
@@ -158,29 +158,53 @@ and `staging`.
 
 ## Command Reference
 
-| Namespace      | Command                                           | Description                                                    |
-|----------------|---------------------------------------------------|----------------------------------------------------------------|
-| **Staging**    | `git trident staging release start <version>`     | Start staging release for new version (first RC)               |
-|                | `git trident staging release finish <version>`    | Merge staging release to `staging` and create tag              |
-|                | `git trident staging hotfix start <version>`      | Create next RC for existing staging version                    |
-|                | `git trident staging hotfix finish <version>`     | Merge hotfix to `staging` and create next RC tag               |
-|                | `git trident staging sync-tags <version>`         | Propagate hotfixes or prod releases to newer RCs               |
-|                | `git trident staging changelog <version>`         | Generate developer changelog (CHANGELOG/QA_NOTES)              |
-| **Production** | `git trident production release start <version>`  | Promote latest staging RC to production release                |
-|                | `git trident production release finish <version>` | Merge release to `production` and tag it                       |
-|                | `git trident production hotfix start [platform]`  | Start a critical hotfix branch directly from production        |
-|                | `git trident production hotfix finish`            | Finish production hotfix and sync changes back                 |
-|                | `git trident production changelog [version]`      | Generate public release notes                                  |
-| **Utility**    | `git trident status`                              | Check sync status, branch differences, and environment tags    |
-|                | `git trident verify-sync`                         | In-depth verification of branches/tags sync                    |
-|                | `git trident push-all [remote]`                   | Push all local staging/production/develop updates & tags       |
-|                | `git trident cleanup prune`                       | Delete deprecated RC tags from local and remote                |
-|                | `git trident cleanup sync [tags/branches]`        | Re-sync local git references from remote                       |
-|                | `git trident config [init/show]`                  | Initialize or inspect current two-tier configuration           |
-|                | `git trident hooks [install/enable/status]`       | Install/configure Git Trident git hooks                        |
-|                | `git trident version [health/env]`                | Show tool version, system health check, and environment        |
-|                | `git trident version [check/update]`              | Check for updates or upgrade Git Trident to the latest version |
-|                | `git trident uninstall [--force]`                 | Completely remove Git Trident from your system                 |
+| Namespace      | Command                                                                  | Description                                                      |
+|----------------|--------------------------------------------------------------------------|------------------------------------------------------------------|
+| **Staging**    | `git trident staging release start <version>`                            | Start staging release for new version (first RC)                 |
+|                | `git trident staging release finish <version>`                           | Merge staging release to `staging` and create tag                |
+|                | `git trident staging hotfix start <version>`                             | Create next RC for existing staging version                      |
+|                | `git trident staging hotfix finish <version>`                            | Merge hotfix to `staging` and create next RC tag                 |
+|                | `git trident staging sync-tags <version>`                                | Propagate hotfixes or prod releases to newer RCs                 |
+|                | `git trident staging changelog <version>`                                | Generate developer changelog (CHANGELOG/QA_NOTES)                |
+| **Production** | `git trident production release start <version>`                         | Promote latest staging RC to production release                  |
+|                | `git trident production release finish <version>`                        | Merge release to `production` and tag it                         |
+|                | `git trident production hotfix start [platform]`                         | Start a critical hotfix branch directly from production          |
+|                | `git trident production hotfix finish`                                   | Finish production hotfix and sync changes back                   |
+|                | `git trident production changelog [version]`                             | Generate public release notes                                    |
+| **Utility**    | `git trident doctor`                                                     | Diagnose environment, installation, configuration and repository |
+|                | `git trident abort [--dry-run]`                                          | Unwind a partially-completed release or hotfix (local refs only) |
+|                | `git trident status --json`                                              | Machine-readable status for scripts and CI                       |
+|                | `git trident --dry-run <command>`                                        | Report what a command would do, without changing anything        |
+|                | `git trident status`                                                     | Check sync status, branch differences, and environment tags      |
+|                | `git trident verify-sync`                                                | In-depth verification of branches/tags sync                      |
+|                | `git trident push-all [remote]`                                          | Push all local staging/production/develop updates & tags         |
+|                | `git trident tags <staging\|production>`                                 | List available tags for an environment                         |
+|                | `git trident cleanup prune [tags\|temp]`                                              | Delete deprecated RC tags from local and remote                  |
+|                | `git trident cleanup sync [tags/branches]`                               | Re-sync local git references from remote                         |
+|                | `git trident config [init/show/validate]`                                | Initialize, inspect or validate the two-tier configuration       |
+|                | `git trident hooks [install-local/install-global/enable/disable/status]` | Install/configure Git Trident git hooks                          |
+|                | `git trident version [health/env]`                                       | Show tool version, system health check, and environment          |
+|                | `git trident version [check/update]`                                     | Check for updates or upgrade Git Trident to the latest version   |
+|                | `git trident uninstall [--force]`                                        | Completely remove Git Trident from your system                   |
+
+### Global Options
+
+These work with any command.
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Report what the command would do, and change nothing. Release and hotfix flows print the exact sequence they would perform and stop before their first write. |
+| `--yes`, `-y` | Never prompt for confirmation. Does *not* silence the merge-conflict prompt, which asks about work only a human can have done. |
+| `--no-color` | Disable coloured output. `NO_COLOR` and `GT_COLOR=never\|always\|auto` are also honoured. |
+| `--debug` | Verbose diagnostic output. |
+| `--help`, `-h` | Show help for the command. Never requires a repository, a config, or the network. |
+| `--version`, `-V` | Print `git-trident <version>` on stdout and exit. Works outside a repository. |
+
+```bash
+git trident --dry-run production release finish 1.2.0   # see the plan, change nothing
+git trident --yes staging release finish 1.2.0          # unattended / CI
+git trident status --json | jq .synchronized            # machine-readable
+```
 
 ---
 

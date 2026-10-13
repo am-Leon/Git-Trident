@@ -2,6 +2,15 @@
 # Git Trident Version Utilities - Comprehensive tag and version management
 # Supports both single-environment and multi-platform modes
 
+# This file is sourced on its own in several places (tests, and libs that pull in
+# version utilities without common.sh), so it must satisfy its own dependency on
+# the tag grammar rather than assume a caller already loaded it.
+if ! declare -f gt_rc_suffix >/dev/null 2>&1; then
+    if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh" ]]; then
+        source "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh"
+    fi
+fi
+
 # =============================================================================
 # VERSION PARSING AND VALIDATION
 # =============================================================================
@@ -42,9 +51,11 @@ extract_base_version() {
 # Input: 1.2.3-rc-02 → Output: 02
 extract_rc_number() {
     local version="$1"
-    local suffix="$(get_rc_suffix)"
+    # Escaped pattern: STAGING_TAG_SUFFIX is user-configurable and may contain
+    # regex metacharacters (see git-trident-tagspec.sh).
+    local re; re="$(gt_re_rc_tail)"
 
-    if [[ "$version" =~ .*${suffix}([0-9][0-9]*)$ ]]; then
+    if [[ "$version" =~ $re ]]; then
         echo "${BASH_REMATCH[1]}"
     else
         echo ""
@@ -94,7 +105,8 @@ validate_platform_specific_version() {
 
     # Format: platform-MAJOR.MINOR.PATCH[SUFFIX-XX]
     local suffix="$(get_rc_suffix)"
-    if [[ ! "$version" =~ ^([a-zA-Z0-9_-]+)-([0-9]+)\.([0-9]+)\.([0-9]+)(${suffix}[0-9]+)?$ ]]; then
+    local re; re="^([a-zA-Z0-9_-]+)-([0-9]+)\.([0-9]+)\.([0-9]+)$(gt_re_rc_optional)\$"
+    if [[ ! "$version" =~ $re ]]; then
         log_error "Invalid platform-specific version format: $version"
         log_info "Expected format: platform-MAJOR.MINOR.PATCH[${suffix}XX]"
         log_info "Example: android-1.2.3 or ios-2.0.1${suffix}01"
@@ -136,7 +148,8 @@ validate_legacy_version() {
 
     # Format: MAJOR.MINOR.PATCH[SUFFIX-XX]
     local suffix="$(get_rc_suffix)"
-    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(${suffix}[0-9]+)?$ ]]; then
+    local re; re="^([0-9]+)\.([0-9]+)\.([0-9]+)$(gt_re_rc_optional)\$"
+    if [[ ! "$version" =~ $re ]]; then
         log_error "Invalid legacy version format: $version"
         log_info "Expected format: MAJOR.MINOR.PATCH[${suffix}XX]"
         log_info "Example: 1.2.3 or 2.0.1${suffix}01"
@@ -326,39 +339,58 @@ get_all_production_tags() {
 # RC NUMBER MANAGEMENT
 # =============================================================================
 
+# Kept as the historical name; the grammar now lives in git-trident-tagspec.sh.
 get_rc_suffix(){
-  echo "${STAGING_TAG_SUFFIX:--rc-}"
+  gt_rc_suffix
 }
 
 # Get next RC number for a version
 get_next_rc_number() {
     local version="$1"
-    local lock_file=".git/git-trident-rc-lock"
 
-    # Simple locking mechanism to prevent race conditions
-    local max_wait=10
-    local waited=0
-    while [ -f "$lock_file" ] && [ $waited -lt $max_wait ]; do
-        sleep 0.5
-        waited=$((waited + 1))
-    done
-    touch "$lock_file"
-
-    local latest_rc=$(get_latest_rc_for_version "$version")
+    # NOTE: this function only COMPUTES the next number; it does not reserve it.
+    # The caller must hold the RC lock across "compute -> create tag", because
+    # the value is stale the moment another process creates a tag.
+    #
+    # The previous implementation tried to lock here and got it wrong three ways:
+    #   * `[ -f "$lock" ]` then `touch "$lock"` is a check-then-act race, not an
+    #     atomic acquisition (mkdir is — see acquire_lock in common.sh);
+    #   * after max_wait it proceeded WITHOUT the lock rather than failing;
+    #   * it released the lock before returning, so the critical section — which
+    #     ends when the tag is created, in the caller — was never covered.
+    local latest_rc; latest_rc=$(get_latest_rc_for_version "$version")
     local next_rc="01"
 
     if [ -n "$latest_rc" ]; then
-        local current_rc=$(extract_rc_number "$latest_rc")
+        local current_rc; current_rc=$(extract_rc_number "$latest_rc")
         if [ -n "$current_rc" ]; then
-            # Remove leading zeros for arithmetic
-            local current_num=$(echo "$current_rc" | sed 's/^0*//')
+            # Strip leading zeros so 08/09 are not read as invalid octal.
+            local current_num; current_num=$(echo "$current_rc" | sed 's/^0*//')
+            : "${current_num:=0}"
             next_rc=$(printf "%02d" $((current_num + 1)))
         fi
     fi
 
-    # Release lock
-    rm -f "$lock_file"
     echo "$next_rc"
+}
+
+# Reserve the RC namespace for the duration of a release/hotfix completion.
+#
+# Wraps the atomic mkdir-based lock in common.sh. Callers MUST pair this with
+# gt_release_rc_lock, and should install a trap so an interrupted command does
+# not leave the lock behind.
+gt_acquire_rc_lock() {
+    if declare -f acquire_lock >/dev/null 2>&1; then
+        acquire_lock "rc-allocation" || return 1
+    fi
+    return 0
+}
+
+gt_release_rc_lock() {
+    if declare -f release_lock >/dev/null 2>&1; then
+        release_lock "rc-allocation"
+    fi
+    return 0
 }
 
 # Get next RC number for version (for rebase operations)
@@ -420,8 +452,8 @@ extract_base_version_from_tag() {
     local version=$(echo "$tag" | sed "s|^${prefix}||")
     local suffix="$(get_rc_suffix)"
 
-    # Remove RC suffix if present
-    echo "$version" | sed "s|${suffix}[0-9]*$||"
+    # Remove RC suffix if present (escaped — see git-trident-tagspec.sh)
+    echo "$version" | sed "$(gt_sed_strip_rc)"
 }
 
 # Extract full version from tag (without prefix)
@@ -438,9 +470,11 @@ extract_version_from_tag() {
 # =============================================================================
 
 # Validate staging tag is promotable to production
+# $2 (the target production version) is accepted for call-site symmetry with the
+# other validate_* helpers but is not used: promotability is determined entirely
+# by the staging tag's own lineage.
 validate_staging_tag_promotable() {
     local staging_tag="$1"
-    local production_version="$2"
 
     log_info "🔍 Validating staging tag: $staging_tag"
 
@@ -551,17 +585,16 @@ get_platform_type_from_version() {
         return 1
     fi
 
-    # Check if platform is common
-    if [[ " $COMMON_PLATFORMS " =~ " $platform " ]]; then
-        echo "common"
-        return 0
-    fi
+    # Whole-word membership on a space-separated list. See the note in
+    # git-trident-common.sh: a quoted right-hand side of =~ matches literally,
+    # which reads as a regex match and is flagged by SC2076.
+    case " $COMMON_PLATFORMS " in
+        *" $platform "*) echo "common"; return 0 ;;
+    esac
 
-    # Check if platform is independent
-    if [[ " $INDEPENDENT_PLATFORMS " =~ " $platform " ]]; then
-        echo "independent"
-        return 0
-    fi
+    case " $INDEPENDENT_PLATFORMS " in
+        *" $platform "*) echo "independent"; return 0 ;;
+    esac
 
     echo "unknown"
     return 1
@@ -629,122 +662,3 @@ get_dependent_platforms_for_source() {
 # =============================================================================
 # DEPRECATED/UNUSED FUNCTIONS
 # =============================================================================
-
-# Extract full version without RC suffix
-# Input: android-1.2.3-rc-01 → Output: android-1.2.3
-# Input: 1.2.3-rc-01 → Output: 1.2.3
-extract_version_without_rc() {
-    local version="$1"
-    local suffix="$(get_rc_suffix)"
-
-    if [[ "$version" =~ ^(.+)${suffix}[0-9]+$ ]]; then
-        echo "${BASH_REMATCH[1]}"
-    else
-        echo "$version"
-    fi
-}
-
-# Get latest staging base version
-get_latest_staging_base_version() {
-    local platform_filter="${1:-}"
-
-    # Get all staging tags and extract unique base versions
-    local tags=$(get_all_staging_tags "$platform_filter")
-    local suffix="$(get_rc_suffix)"
-
-    echo "$tags" | \
-    sed "s|^${STAGING_TAG_PREFIX}||" | \
-    sed "s|${suffix}[0-9]*$||" | \
-    sort -V | \
-    uniq | \
-    tail -1
-}
-
-# Filter tags by propagation rules
-# Returns only tags that should receive changes from source version
-filter_tags_by_propagation_rules() {
-    local source_version="$1"
-    local target_tags="$2"
-
-    if [ "${PLATFORM_SPECIFIC_TAGS:-false}" != "true" ]; then
-        echo "$target_tags"  # Return all in legacy mode
-        return 0
-    fi
-
-    local filtered_tags=""
-
-    for target_tag in $target_tags; do
-        local target_version=$(extract_version_from_tag "$target_tag" "$STAGING_TAG_PREFIX")
-
-        if is_propagation_allowed "$source_version" "$target_version"; then
-            filtered_tags="${filtered_tags}${target_tag}"$'\n'
-        fi
-    done
-
-    echo "$filtered_tags" | sed '/^$/d'
-}
-
-# Enhanced version validation with classification info (optional)
-validate_version_with_classification() {
-    local version="$1"
-    local context="$2"  # "production", "staging", or empty
-
-    # Use existing validation functions
-    local result=0
-    if [ "$context" = "production" ]; then
-        validate_production_version_format "$version"
-        result=$?
-    elif [ "$context" = "staging" ]; then
-        validate_staging_version_format "$version"
-        result=$?
-    else
-        validate_version_format "$version"
-        result=$?
-    fi
-
-    # If validation failed and we're in platform-specific mode, show classification info
-    if [ $result -ne 0 ] && [ "${PLATFORM_SPECIFIC_TAGS:-false}" = "true" ]; then
-        if [ -n "$COMMON_PLATFORMS" ] || [ -n "$INDEPENDENT_PLATFORMS" ]; then
-            log_info "Common platforms: $COMMON_PLATFORMS"
-            log_info "Independent platforms: $INDEPENDENT_PLATFORMS"
-            log_info "Propagation rules:"
-            log_info "  • Common → Independent: Always propagate"
-            log_info "  • Independent → Other: Never propagate"
-        fi
-    fi
-
-    return $result
-}
-
-# Show platform classification summary
-show_platform_classification_summary() {
-    local version="$1"
-
-    if [ "${PLATFORM_SPECIFIC_TAGS:-false}" != "true" ]; then
-        return 0
-    fi
-
-    local platform=$(extract_platform_from_version "$version")
-    if [ -z "$platform" ]; then
-        return 1
-    fi
-
-    local platform_type=$(get_platform_type_from_version "$version")
-
-    case "$platform_type" in
-        "common")
-            log_info "📋 Platform classification: $platform (COMMON)"
-            log_info "   → Propagates to: $INDEPENDENT_PLATFORMS"
-            ;;
-        "independent")
-            log_info "📋 Platform classification: $platform (INDEPENDENT)"
-            log_info "   → Propagates to: $platform only"
-            ;;
-        "legacy")
-            log_info "📋 Platform classification: Single-environment mode"
-            ;;
-        *)
-            log_warn "Platform classification unknown for: $platform"
-            ;;
-    esac
-}

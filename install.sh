@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Git Trident Installer - Bash 5.0+ Professional Edition
+# Git Trident Installer
 # =============================================================================
-
-# 1. AUTO-UPGRADE SHELL / VERSION CHECK
-if ((BASH_VERSINFO[0] < 4)); then
-    if [[ -x "/usr/local/bin/bash" ]]; then
-        exec "/usr/local/bin/bash" "$0" "$@"
-    elif [[ -x "/opt/homebrew/bin/bash" ]]; then
-        exec "/opt/homebrew/bin/bash" "$0" "$@"
-    else
-        echo -e "\033[0;31m[ERROR]\033[0m This script requires Bash 4.0+."
-        echo -e "Detected: $BASH_VERSION. Please 'brew install bash'."
-        exit 1
-    fi
-fi
+# Runs on Bash 3.2+ — macOS (stock /bin/bash 3.2), Linux, and Windows Git Bash.
+#
+# This script previously re-exec'd into a Bash 4+ binary because of a single
+# associative array. That broke the documented install path, because under
+#   curl -fsSL ... | bash
+# the script arrives on stdin, so "$0" is the interpreter path rather than a
+# file, and the re-exec became "run the bash binary as a shell script":
+#   /bin/bash: /bin/bash: cannot execute binary file
+# Keeping this file Bash 3.2-clean removes the need for a shim entirely, and
+# removes `brew install bash` from onboarding.
+#
+# NOTE: `set -u` is active below. On Bash 3.2, expanding an EMPTY array as
+# "${arr[@]}" raises "unbound variable" (Bash 4.4+ does not). Always use the
+# ${arr[@]+"${arr[@]}"} form for arrays that may be empty.
+# =============================================================================
 
 set -e
 set -u
@@ -58,15 +60,18 @@ fi
 # =============================================================================
 # LOGGING & UI
 # =============================================================================
-declare -A UI=(
-    [RED]='\033[0;31m' [GREEN]='\033[0;32m' [YELLOW]='\033[1;33m'
-    [BLUE]='\033[0;34m' [NC]='\033[0m'
-)
+# Plain scalars, not an associative array: `declare -A` is Bash 4.0+ and would
+# break macOS's stock /bin/bash 3.2.
+UI_RED='\033[0;31m'
+UI_GREEN='\033[0;32m'
+UI_YELLOW='\033[1;33m'
+UI_BLUE='\033[0;34m'
+UI_NC='\033[0m'
 
-log_info()  { echo -e "${UI[GREEN]}[INFO]${UI[NC]} $1"; }
-log_step()  { echo -e "${UI[BLUE]}[STEP]${UI[NC]} $1"; }
-log_warn()  { echo -e "${UI[YELLOW]}[WARN]${UI[NC]} $1"; }
-log_error() { echo -e "${UI[RED]}[ERROR]${UI[NC]} $1"; }
+log_info()  { echo -e "${UI_GREEN}[INFO]${UI_NC} $1"; }
+log_step()  { echo -e "${UI_BLUE}[STEP]${UI_NC} $1"; }
+log_warn()  { echo -e "${UI_YELLOW}[WARN]${UI_NC} $1"; }
+log_error() { echo -e "${UI_RED}[ERROR]${UI_NC} $1"; }
 log_empty() { echo -e ""; }
 
 # Cross-platform sed in-place editing helper for installation
@@ -90,14 +95,14 @@ check_dependencies() {
     local missing_deps=()
     local dependencies=("git" "grep" "sed" "awk" "curl" "date" "tar")
 
-    for dep in "${dependencies[@]}"; do
+    for dep in ${dependencies[@]+"${dependencies[@]}"}; do
         if ! command -v "$dep" >/dev/null 2>&1; then
             missing_deps+=("$dep")
         fi
     done
 
     if [ ${#missing_deps[@]} -ne 0 ]; then
-        echo -e "\033[0;31m[ERROR]\033[0m Missing dependencies: ${missing_deps[*]}"
+        echo -e "\033[0;31m[ERROR]\033[0m Missing dependencies: ${missing_deps[*]+"${missing_deps[*]}"}"
         echo "Please install them via your package manager (brew/apt/yum)."
         exit 1
     fi
@@ -124,6 +129,23 @@ TEMP_DIR=""
 # =============================================================================
 GITHUB_REPO="am-Leon/Git-Trident"
 INSTALL_VERSION="${INSTALL_VERSION:-latest}"
+
+# Accept both "v1.2.3" and "1.2.3" as the release identifier.
+#
+# This is what lets ALREADY-INSTALLED clients self-update. `git trident version
+# update` downloads this installer fresh from the main branch and then hands it
+# INSTALL_VERSION. Releases up to and including v0.1.1 stripped the leading "v"
+# before doing so, which produced
+#     .../releases/download/0.1.1/git-trident.tar.gz   -> 404
+# because the release tag is "v0.1.1". Normalising here means those clients
+# reach the right asset and can upgrade in place, instead of every existing user
+# having to uninstall and reinstall by hand.
+#
+# The release tag format is "v<semver>"; a value that already starts with "v" is
+# left alone, and "latest" is handled separately below.
+if [[ "$INSTALL_VERSION" != "latest" ]] && [[ "$INSTALL_VERSION" != v* ]]; then
+    INSTALL_VERSION="v$INSTALL_VERSION"
+fi
 
 # Remote mode: empty SCRIPT_DIR OR local bin/git-trident not found
 if [[ -z "$SCRIPT_DIR" ]] || [[ ! -f "$SCRIPT_DIR/bin/git-trident" ]]; then
@@ -180,7 +202,7 @@ detect_active_profile() {
     fi
 
     local profile_path=""
-    for file in "${candidates[@]}"; do
+    for file in ${candidates[@]+"${candidates[@]}"}; do
         if [[ -f "$file" ]]; then
             profile_path="$file"
             break
@@ -216,7 +238,6 @@ detect_active_profile() {
 show_post_install_instructions() {
     local profile=$1
     local global_config="$HOME/.git-trident-config"
-    local project_template="$INSTALL_DIR/templates/git-trident-config"
 
     log_empty
     log_info "🎉 GIT TRIDENT INSTALLATION COMPLETE!"
@@ -226,6 +247,15 @@ show_post_install_instructions() {
     log_info "⚙️  Global config:    $global_config"
 
     log_empty
+    if [[ -d "$INSTALL_DIR/completions" ]]; then
+        log_empty
+        log_info "⌨️  SHELL COMPLETION (optional)"
+        log_info "=========================================="
+        log_info "• bash:  echo 'source $INSTALL_DIR/completions/git-trident.bash' >> ~/.bashrc"
+        log_info "• zsh :  mkdir -p ~/.zfunc && cp $INSTALL_DIR/completions/_git-trident ~/.zfunc/"
+        log_info "         then ensure ~/.zshrc has: fpath=(~/.zfunc \$fpath); autoload -Uz compinit; compinit"
+    fi
+
     log_info "🔧 NEXT STEPS"
     log_info "=========================================="
     log_info "• Inside any Git project, initialize Git Trident:"
@@ -244,7 +274,9 @@ show_post_install_instructions() {
 # =============================================================================
 
 exit_handler() {
+    # Capture the status FIRST: every command below overwrites $?.
     local exit_code=$?
+
     # Clean up temp folder if it exists
     if [[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]]; then
         rm -rf "$TEMP_DIR"
@@ -254,6 +286,15 @@ exit_handler() {
         log_error "Installation failed. Cleaning up..."
         [[ -d "$INSTALL_DIR" ]] && rm -rf -- "$INSTALL_DIR"
     fi
+
+    # Exit explicitly with the captured status.
+    #
+    # This is not a behaviour fix: bash already preserves the status that
+    # triggered an EXIT trap unless the handler exits itself, and a failed
+    # install exited 1 both before and after this change (verified). It makes
+    # the contract explicit instead of implicit, and gives exit_code — which was
+    # captured and then never used — an actual purpose.
+    exit "$exit_code"
 }
 trap exit_handler EXIT INT TERM
 
@@ -269,11 +310,22 @@ run_install() {
     fi
 
     # 2. Deploy Files
-    mkdir -p "$INSTALL_DIR"/{bin,lib,templates,docs,hooks}
+    mkdir -p "$INSTALL_DIR"/{bin,lib,templates,docs,hooks,completions}
     cp -r "$SCRIPT_DIR"/bin/* "$INSTALL_DIR/bin/"
     cp -r "$SCRIPT_DIR"/lib/* "$INSTALL_DIR/lib/"
     [[ -d "$SCRIPT_DIR/templates" ]] && cp -r "$SCRIPT_DIR/templates"/* "$INSTALL_DIR/templates/"
     [[ -d "$SCRIPT_DIR/hooks" ]] && cp -r "$SCRIPT_DIR/hooks"/* "$INSTALL_DIR/hooks/"
+    # docs/ and completions/ are packaged by build.sh; the directories were
+    # being created and then left empty.
+    [[ -d "$SCRIPT_DIR/docs" ]] && cp -r "$SCRIPT_DIR/docs"/* "$INSTALL_DIR/docs/" 2>/dev/null
+    [[ -d "$SCRIPT_DIR/completions" ]] && cp -r "$SCRIPT_DIR/completions"/* "$INSTALL_DIR/completions/" 2>/dev/null
+    # LICENSE must travel with the installed copy: the MIT terms require the
+    # notice to accompany "all copies or substantial portions of the Software",
+    # and an installation is a copy. README/CHANGELOG come along so an offline
+    # user can read what they have.
+    for _doc in LICENSE README.md CHANGELOG.md; do
+        [[ -f "$SCRIPT_DIR/$_doc" ]] && cp "$SCRIPT_DIR/$_doc" "$INSTALL_DIR/"
+    done
     chmod +x "$INSTALL_DIR"/bin/*
     if [[ -d "$INSTALL_DIR/hooks" ]] && ls "$INSTALL_DIR/hooks"/* >/dev/null 2>&1; then
         chmod +x "$INSTALL_DIR"/hooks/*
@@ -313,7 +365,7 @@ run_install() {
         else
             # Piped execution (curl | bash) — cannot restart
             log_empty
-            log_info "💡 If you face 'command not found', run: ${UI[GREEN]}source $profile${UI[NC]}"
+            log_info "💡 If you face 'command not found', run: ${UI_GREEN}source $profile${UI_NC}"
         fi
     else
         log_error "Installation verification failed."

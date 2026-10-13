@@ -94,45 +94,6 @@ get_staging_tags_for_propagation() {
     echo "$candidate_tags" | sed '/^$/d'
 }
 
-# Legacy function - kept for backward compatibility
-get_staging_tags_newer_than_version() {
-    local source_version="$1"
-    get_staging_tags_for_propagation "$source_version"
-}
-
-find_affected_versions() {
-    local hotfix_version="$1"
-    local hotfix_tag="$2"
-
-    # Get staging tags that should receive propagation
-    local candidate_tags=$(get_staging_tags_for_propagation "$hotfix_version")
-
-    if [ -z "$candidate_tags" ]; then
-        echo ""  # Return empty string
-        return 0
-    fi
-
-    # Get only the LATEST RC for each base version
-    local latest_rcs_to_check=$(get_latest_rc_per_base_version "$candidate_tags")
-
-    if [ -z "$latest_rcs_to_check" ]; then
-        echo ""  # Return empty string
-        return 0
-    fi
-
-    local affected_versions=""
-
-    for tag in $latest_rcs_to_check; do
-        # Check if this version already includes the hotfix
-        if ! git merge-base --is-ancestor "$hotfix_tag" "$tag" 2>/dev/null; then
-            affected_versions="${affected_versions}${tag}"$'\n'
-        fi
-    done
-
-    # Return ONLY the affected versions (clean, no log messages)
-    echo "$affected_versions" | sed '/^$/d'
-}
-
 # =============================================================================
 # PROPAGATION OPERATIONS (WITH PLATFORM CLASSIFICATION)
 # =============================================================================
@@ -144,6 +105,14 @@ create_propagation_temp_branch() {
     local temp_branch="temp-propagate-${base_version//[^a-zA-Z0-9_-]/-}"
 
     # Create temp branch from the existing RC (not from staging branch)
+    # Record it globally so an interrupted run can clean it up. Without this a
+    # killed or failed sync leaves orphan temp-* branches behind, and the next
+    # run fails because `git checkout -b` cannot recreate an existing branch.
+    # Read by handle_exit in bin/git-trident-staging-sync-tags; static analysis
+    # cannot follow that across the source boundary.
+    # shellcheck disable=SC2034
+    GT_TEMP_BRANCH="$temp_branch"
+
     verify_step "Creating temporary branch from existing RC: $latest_rc_tag" \
         "git checkout -b '$temp_branch' '$latest_rc_tag'" \
         "On temporary branch: $temp_branch (from $latest_rc_tag)"
@@ -257,6 +226,8 @@ propagate_to_single_version() {
             # Clean up temp branch on failure
             git checkout "$STAGING_BRANCH" >/dev/null 2>&1
             git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
             return 1
         fi
 
@@ -267,6 +238,8 @@ propagate_to_single_version() {
         # Clean up temp branch
         git checkout "$STAGING_BRANCH" >/dev/null 2>&1
         git branch -D "$temp_branch" >/dev/null 2>&1
+        # shellcheck disable=SC2034  # read by handle_exit in git-trident-staging-sync-tags
+        GT_TEMP_BRANCH=""
     fi
 
     # Update staging branch with the new tag
@@ -319,7 +292,6 @@ show_propagation_summary() {
         local tag_platform_info=""
         if is_platform_specific_mode; then
             local tag_version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
-            local tag_platform=$(extract_platform_from_version "$tag_version")
             local tag_platform_type=$(get_platform_type_from_version "$tag_version")
             tag_platform_info=" ($tag_platform_type)"
         fi
@@ -343,35 +315,6 @@ show_propagation_summary() {
     log_info "     1. Tag-X + hotfix → Tag-X+1"
     log_info "     2. Tag-Y + Tag-X+1 → Tag-Y+1"
     log_empty ""
-}
-
-process_propagation_versions() {
-    local affected_versions_array=("$@")
-    local hotfix_tag="${affected_versions_array[0]}"
-    local hotfix_version="${affected_versions_array[1]}"
-    local hotfix_rc_number="${affected_versions_array[2]}"
-
-    # Shift out the first three elements
-    shift 3
-    local affected_tags=("$@")
-
-    local updated_count=0
-    local total_count=${#affected_tags[@]}
-
-    # Process each base version's latest RC
-    for latest_rc_tag in "${affected_tags[@]}"; do
-        if propagate_to_single_version "$latest_rc_tag" "$hotfix_tag" \
-            "$hotfix_version" "$hotfix_rc_number"; then
-            updated_count=$((updated_count + 1))
-        else
-            log_error "Failed to propagate to $latest_rc_tag"
-            # Continue with other versions even if one fails
-        fi
-        echo ""
-    done
-
-    # Return as array: updated_count total_count
-    echo "$updated_count $total_count"
 }
 
 show_propagation_completion_summary() {
@@ -507,7 +450,7 @@ propagate_staging_hotfix() {
 # DETECTION FUNCTION (--dry-run MODE WITH PLATFORM CLASSIFICATION)
 # =============================================================================
 
-show_detection_analysis() {
+stg_sync_show_detection_analysis() {
     local latest_rcs_to_check="$1"
     local hotfix_tag="$2"
     local hotfix_version="$3"
@@ -576,7 +519,6 @@ show_detection_results() {
             local tag_platform_info=""
             if is_platform_specific_mode; then
                 local tag_version=$(extract_version_from_tag "$tag" "$STAGING_TAG_PREFIX")
-                local tag_platform=$(extract_platform_from_version "$tag_version")
                 local tag_platform_type=$(get_platform_type_from_version "$tag_version")
                 tag_platform_info=" ($tag_platform_type)"
             fi
@@ -658,7 +600,7 @@ detect_staging_hotfix_impact() {
 
     # Analyze and get results as array
     local analysis_result
-    analysis_result=$(show_detection_analysis "$latest_rcs_needing_hotfix" "$hotfix_tag" "$hotfix_version")
+    analysis_result=$(stg_sync_show_detection_analysis "$latest_rcs_needing_hotfix" "$hotfix_tag" "$hotfix_version")
 
     # Parse the result: first two values are counts, next two are hotfix info, rest are tags
     IFS=' ' read -r affected_count total_count hf_tag hf_version remaining <<< "$analysis_result"

@@ -11,10 +11,28 @@ development environment, adding new subcommands, writing and running tests, and 
 
 To run and develop Git Trident, your local machine needs:
 
-1. **Bash 4.0+**: Modern Bash features (such as associative arrays) are heavily utilized.
-    - *macOS*: Install via Homebrew: `brew install bash`.
-    - *Linux/Windows Git Bash*: Bash 4.0+ is typically the system default.
+1. **Bash 3.2+** — no `brew install bash` required.
+
+   macOS ships Bash **3.2.57** at `/bin/bash` and it cannot be replaced, so 3.2 is the
+   floor for everything in `bin/`, `lib/` and `hooks/`, and for `install.sh`. The whole
+   test suite runs on it.
+
+   | Platform           | `/bin/bash`                          |
+   |--------------------|--------------------------------------|
+   | macOS              | 3.2.57 — **the compatibility floor** |
+   | Linux              | 4.x / 5.x                            |
+   | Windows (Git Bash) | 4.4 / 5.x (MSYS2)                    |
+
+   A Bash 4+ construct passes on a developer's machine and fails on every Mac, so this
+   is enforced rather than documented: `tests/test_bash32_compat.sh` rejects Bash 4.0–4.3
+   constructs, and `tests/run_all.sh` runs the suite under the *platform's own* bash,
+   warning loudly when that is not 3.2.
+
+   See [Bash 3.2 cookbook](#-bash-32-cookbook) below for the idioms to use instead.
+
 2. **Utilities**: `git`, `grep`, `sed`, `awk`, `curl`, `date`, `tar`.
+3. **Optional**: `shellcheck` — enables `tests/test_shellcheck.sh`. The suite skips that
+   gate when it is absent, so it is not required to contribute.
 
 ### Local Installation for Development
 
@@ -79,6 +97,83 @@ inside [lib/git-trident-help.sh](lib/git-trident-help.sh):
 
 ---
 
+## 📐 Code Conventions
+
+### 🐚 Bash 3.2 cookbook
+
+**Why this is a hard rule.** macOS ships Bash 3.2.57 at `/bin/bash`, it cannot be
+replaced, and it is what `curl … | bash` runs on a Mac. A Bash 4+ construct passes on
+the author's machine and fails for every macOS user — so it is enforced by the test
+suite rather than left to review:
+
+- `tests/test_bash32_compat.sh` rejects Bash 4.0–4.3 constructs, `set -u`, CRLF line
+  endings and wrong git-index exec bits.
+- `tests/run_all.sh` runs the suite under the **platform's own** bash and warns loudly
+  when that is not 3.2, so a green run on Bash 5 is never mistaken for proof.
+
+The whole runtime is 3.2-clean. For a long time the installer alone needed Bash 4 — for
+a single associative array used as a colour map — and that one construct broke the
+documented install path entirely, because under `curl … | bash` the re-exec tried to run
+the `bash` binary as a shell script.
+
+Left column breaks on macOS. Right column works on every supported platform.
+
+| Instead of (Bash 4+)                 | Use (Bash 3.2-safe)                                                                               |
+|--------------------------------------|---------------------------------------------------------------------------------------------------|
+| `declare -A m; m[k]=v`               | parallel arrays, or a `k=v` string split with `case`/`IFS` — as `parse_commit_prefix_config` does |
+| `mapfile -t arr < <(cmd)`            | `IFS=$'\n' read -d '' -ra arr <<< "$(cmd)"`                                                       |
+| `"${arr[@]}"` *(array may be empty)* | `${arr[@]+"${arr[@]}"}`                                                                           |
+| `set -u`                             | `"${VAR:-}"` defaults + shellcheck **SC2154**                                                     |
+| `local -n ref=$name`                 | `eval "$name=…"` *(the existing idiom)*                                                           |
+| `${s^^}` / `${s,,}`                  | `tr '[:lower:]' '[:upper:]'` / `awk '{print toupper($0)}'`                                        |
+| `[[ -v VAR ]]`                       | `[ -n "${VAR+x}" ]`                                                                               |
+| `;;&` case fall-through              | restructure, or repeat the branch                                                                 |
+| `${arr[-1]}`                         | `"${arr[${#arr[@]}-1]}"`                                                                          |
+| `&>> file`                           | `>> file 2>&1`                                                                                    |
+
+**`set -u` is banned in `bin/`, `lib/` and `hooks/`** and the compatibility gate fails if
+it reappears. On Bash 3.2 expanding an *empty* array under `set -u` is fatal, while on
+4.4+ it expands to nothing:
+
+```
+bash 3.2.57 :  set -u; a=(); printf "%s" "${a[@]}"   ->  a[@]: unbound variable
+bash 5.3.20 :  set -u; a=(); printf "%s" "${a[@]}"   ->  (nothing, exit 0)
+```
+
+There are 80+ such expansions, so `set -u` would break macOS only. `install.sh`,
+`build.sh` and `scripts/` may use it — they are entry points, not sourced libraries —
+but must expand possibly-empty arrays with `${arr[@]+"${arr[@]}"}`.
+
+**Before every commit:**
+
+```bash
+/bin/bash --version | head -1     # must say 3.2.57 on macOS
+/bin/bash tests/run_all.sh        # the floor, not your shell
+```
+
+### Return-value convention
+
+| Prefix                              | `return 0` means |
+|-------------------------------------|------------------|
+| `check_*`, `validate_*`, `verify_*` | healthy / valid  |
+| `has_*`, `is_*`, `*_exists`         | true             |
+
+Mixing these are what made a repository with no tags report "Deprecated tags exist".
+
+### Output streams
+
+Logs go to **stderr** (`log_info`, `log_warn`, `log_error`, `log_step`, `log_empty`).
+Only values a caller consumes go to **stdout**. Printing a table to stdout in the middle
+of a stderr log stream makes either redirection useless.
+
+### Returning multiple values
+
+Set named globals (`GT_ARG_*`, `GT_OUT_*`) — never `echo "$a $b"` for the caller to split
+with `read`. Empty fields collapse under the default IFS and shift every later field, and
+`exit` inside a command substitution terminates only the subshell.
+
+---
+
 ## 🧪 Testing Strategy
 
 Automated test suites are located in the `tests/` directory.
@@ -126,8 +221,14 @@ Run the release tool from the root of the repository to bump version configurati
 
 ### CI/CD Pipeline
 
-- **Continuous Integration**: Pushes to `main`/`develop` and pull requests to `main` trigger tests on both Ubuntu and
-  macOS runner platforms (`.github/workflows/ci.yml`).
-- **Continuous Deployment**: When a new tag `v*` is pushed by `bump-version.sh`, the release workflow (
-  `.github/workflows/release.yml`) builds the distribution package, runs tests, and publishes a new GitHub Release with
-  the tarball attached.
+One workflow, `.github/workflows/ci.yml`, handles both. They were separate files
+until the release path was found to be running a *weaker* gate than pull requests
+did — tests on Ubuntu only, while macOS is the compatibility floor.
+
+| Job | Runs on | Does |
+|-----------------|--------------------------------------------|---------------------------------------------------------------|
+| `test` | every push to `main`/`develop`, every PR, and every `v*` tag | Full suite on Ubuntu **and** macOS, with shellcheck installed so `test_shellcheck.sh` actually executes |
+| `version-sync` | the same | Constants vs. test assertions, plus the tag itself on a tag build — before anything is built |
+| `release` | `v*` tags only (`if: startsWith(github.ref, 'refs/tags/v')`) | Builds the tarball, checks it reports the tag's version, publishes the GitHub Release |
+
+`release` needs both other jobs, so a tag that fails on macOS never publishes.

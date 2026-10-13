@@ -20,7 +20,6 @@ setup_test_repo() {
     repo_dir=$(mktemp -d)
 
     # Save current dir
-    local original_dir="$PWD"
 
     cd "$repo_dir" || return 1
     git init -q
@@ -62,7 +61,6 @@ export COMMIT_PREFIXES="wip|fix|feat|enhance|cmd"
 export COMMIT_PREFIX_DESCRIPTIONS="Work In Progress|Bug Fixes|New Features|Enhancements|Commands"
 export CHANGELOG_QA_EXCLUDED_PREFIXES=""
 export CHANGELOG_RELEASE_EXCLUDED_PREFIXES="wip|cmd"
-export CHANGELOG_WEBHOOK_URL=""
 export DEBUG=false
 
 # Source the changelog script (won't auto-execute due to guard)
