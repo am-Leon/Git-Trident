@@ -236,8 +236,14 @@ $ git trident --dry-run staging release finish 1.0.0
 
 Covered: staging and production release/hotfix start and finish, `push-all`,
 `cleanup prune tags`, `cleanup prune temp`, `cleanup sync branches`, `sync-tags`
-and `abort`. Every one is verified byte-identical by `tests/test_e2e_dry_run.sh`,
-which fingerprints all refs, the working tree and the remote before and after.
+and `abort`. `tests/test_e2e_dry_run.sh` fingerprints refs, the working tree and
+the remote before and after each one.
+
+One documented exception: `push-all --dry-run` runs `git fetch`. Its report is
+computed against remote-tracking refs, so skipping the fetch would make it
+describe a remote state that may be hours stale. The fetch updates `refs/remotes/*`
+— git's cache of the remote — and nothing else: no branch, tag, working-tree
+file or remote ref is touched, which the suite asserts explicitly.
 
 ### `--json`
 

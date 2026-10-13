@@ -20,7 +20,25 @@ gt_hash() {
     fi
 }
 
+# What --dry-run must never change: local branches, tags, the working tree, and
+# the remote itself.
+#
+# refs/remotes/* is excluded ON PURPOSE, not for convenience. `push-all --dry-run`
+# fetches, because its report is computed against remote-tracking refs and a
+# report built on stale ones would be confidently wrong. A fetch updates that
+# cache — git's record of the remote — while touching nothing the user owns.
+# Excluding it here is the only way the exclusion stays visible; folded into the
+# fixture it would just look like the invariant held.
 fingerprint() {
+    { git for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags 2>/dev/null
+      git status --porcelain 2>/dev/null
+      git ls-remote origin 2>/dev/null
+    } | sort | gt_hash | awk '{print $1}'
+}
+
+# The strict variant: nothing at all, remote-tracking refs included. Used for
+# every command that has no reason to contact the remote.
+fingerprint_strict() {
     { git for-each-ref --format='%(refname) %(objectname)' 2>/dev/null
       git status --porcelain 2>/dev/null
       git ls-remote origin 2>/dev/null
@@ -127,6 +145,33 @@ assert_equals "$(fingerprint)" "$before" "sync-tags --dry-run (via dispatcher) c
 # Sanity: without the flag, abort really does remove the local-only state.
 "$GT_BIN/git-trident" abort >/dev/null 2>&1 </dev/null
 assert_tag_absent "staging/1.0.0-rc-01" "abort without --dry-run still removes local-only state"
+
+# ---------------------------------------------------------------------------
+# DR_99 — the fetch exclusion, stated outright.
+#
+# A real acceptance run caught `--dry-run push-all` creating
+# refs/remotes/origin/HEAD. The suite had missed it because the fixture fetches
+# during setup, so the ref already existed before the first assertion — the
+# invariant looked like it held when it was simply never tested.
+#
+# Here the tracking refs are deleted first, so the fetch definitely happens.
+# Everything the user owns must still be untouched afterwards.
+# ---------------------------------------------------------------------------
+start_test_case "dr_99_push_all_fetch_is_the_only_effect"
+
+git for-each-ref --format='%(refname)' refs/remotes 2>/dev/null | while read -r r; do
+    git update-ref -d "$r" 2>/dev/null
+done
+
+heads_before="$(git for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags | sort)"
+tree_before="$(git status --porcelain | sort)"
+remote_before="$(git ls-remote origin 2>/dev/null | sort)"
+
+"$GT_BIN/git-trident" --dry-run push-all >/dev/null 2>&1 </dev/null
+
+assert_equals "$(git for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags | sort)"     "$heads_before" "push-all --dry-run leaves every local branch and tag untouched"
+assert_equals "$(git status --porcelain | sort)" "$tree_before"     "push-all --dry-run leaves the working tree untouched"
+assert_equals "$(git ls-remote origin 2>/dev/null | sort)" "$remote_before"     "push-all --dry-run pushes nothing to the remote"
 
 gt_fixture_destroy
 print_summary

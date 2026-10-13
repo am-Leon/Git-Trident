@@ -1104,7 +1104,16 @@ main() {
         log_empty ""
     fi
 
-    # Fetch latest
+    # Fetch latest.
+    #
+    # This runs under --dry-run too, and deliberately so: the report below is
+    # computed against remote-tracking refs, so skipping the fetch would make
+    # --dry-run describe a remote state that may be hours stale — a confident
+    # wrong answer, which is worse than none.
+    #
+    # It is the one thing --dry-run changes, and only in the sense that `git
+    # fetch` changes anything: refs/remotes/* are git's cache of the remote.
+    # No branch, tag, working-tree file or remote ref is touched.
     log_info "🔄 Fetching latest from $remote..."
     if ! git fetch "$remote"; then
         log_error "Failed to fetch from $remote"

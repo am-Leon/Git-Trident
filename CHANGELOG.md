@@ -158,7 +158,11 @@ curl -fsSL https://raw.githubusercontent.com/am-Leon/Git-Trident/main/install.sh
   workflow operation. Safe in CI.
 - **`--dry-run`, globally** — on every mutating command. Release and hotfix flows
   print the exact sequence they would perform and stop before their first write.
-  Verified byte-identical across all thirteen commands.
+  Verified across all thirteen commands: no branch, tag, working-tree file or
+  remote ref changes. (`push-all --dry-run` does fetch — its report is computed
+  against remote-tracking refs, and one built on stale refs would be
+  confidently wrong — so it refreshes git's cache of the remote and nothing
+  else.)
 - **`--json`** — `git trident status --json` emits machine-readable status on
   stdout with logs on stderr.
 - **`--yes` / `--non-interactive`** — never prompt. Deliberately does *not*

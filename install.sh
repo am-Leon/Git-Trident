@@ -319,6 +319,13 @@ run_install() {
     # being created and then left empty.
     [[ -d "$SCRIPT_DIR/docs" ]] && cp -r "$SCRIPT_DIR/docs"/* "$INSTALL_DIR/docs/" 2>/dev/null
     [[ -d "$SCRIPT_DIR/completions" ]] && cp -r "$SCRIPT_DIR/completions"/* "$INSTALL_DIR/completions/" 2>/dev/null
+    # LICENSE must travel with the installed copy: the MIT terms require the
+    # notice to accompany "all copies or substantial portions of the Software",
+    # and an installation is a copy. README/CHANGELOG come along so an offline
+    # user can read what they have.
+    for _doc in LICENSE README.md CHANGELOG.md; do
+        [[ -f "$SCRIPT_DIR/$_doc" ]] && cp "$SCRIPT_DIR/$_doc" "$INSTALL_DIR/"
+    done
     chmod +x "$INSTALL_DIR"/bin/*
     if [[ -d "$INSTALL_DIR/hooks" ]] && ls "$INSTALL_DIR/hooks"/* >/dev/null 2>&1; then
         chmod +x "$INSTALL_DIR"/hooks/*
