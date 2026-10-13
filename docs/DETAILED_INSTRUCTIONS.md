@@ -215,6 +215,51 @@ Initiates the self-upgrade flow:
 
 ---
 
+## 🔍 Previewing and Recovering
+
+### `--dry-run`
+
+Valid with any command. Release and hotfix flows do **not** attempt to simulate
+the merges that follow — those depend on content that cannot be known without
+performing them, so a simulation would either be inaccurate or would have to do
+the work. Instead each flow prints the exact sequence it would perform and exits
+before its first write:
+
+```
+$ git trident --dry-run staging release finish 1.0.0
+   [dry-run] would create tag staging/1.0.0-rc-01 from release/stg/1.0.0
+   [dry-run] would merge release/stg/1.0.0 into staging
+   [dry-run] would merge staging into develop
+   [dry-run] would delete branch release/stg/1.0.0
+🔍 DRY RUN — nothing was changed.
+```
+
+Covered: staging and production release/hotfix start and finish, `push-all`,
+`cleanup prune tags`, `cleanup prune temp`, `cleanup sync branches`, `sync-tags`
+and `abort`. Every one is verified byte-identical by `tests/test_e2e_dry_run.sh`,
+which fingerprints all refs, the working tree and the remote before and after.
+
+### `--json`
+
+```bash
+git trident status --json 2>/dev/null | jq .
+```
+
+Emits machine-readable status on stdout while logs go to stderr, so the two never
+interleave. Fields include `synchronized`, `production_in_staging`,
+`staging_in_develop`, tag counts, `latest_production`, `orphaned_temp_branches`
+and `merge_in_progress`. The exit status still reflects synchronisation, so it
+works as a CI check as well as a data source.
+
+### `doctor` and `abort`
+
+`git trident doctor` diagnoses five layers in dependency order and stops at the
+first broken one. `git trident abort` unwinds a partially-completed flow,
+removing only local, unpushed refs. See
+[QUICK_START](QUICK_START.md#-when-something-goes-wrong).
+
+---
+
 ## 🧪 Testing Framework & Verification
 
 Git Trident includes an automated unit-test runner and test suites located in the `tests/` directory to verify CLI

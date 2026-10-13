@@ -178,13 +178,32 @@ and `staging`.
 |                | `git trident status`                                                     | Check sync status, branch differences, and environment tags      |
 |                | `git trident verify-sync`                                                | In-depth verification of branches/tags sync                      |
 |                | `git trident push-all [remote]`                                          | Push all local staging/production/develop updates & tags         |
-|                | `git trident cleanup prune`                                              | Delete deprecated RC tags from local and remote                  |
+|                | `git trident tags <staging\|production>`                                 | List available tags for an environment                         |
+|                | `git trident cleanup prune [tags\|temp]`                                              | Delete deprecated RC tags from local and remote                  |
 |                | `git trident cleanup sync [tags/branches]`                               | Re-sync local git references from remote                         |
 |                | `git trident config [init/show/validate]`                                | Initialize, inspect or validate the two-tier configuration       |
 |                | `git trident hooks [install-local/install-global/enable/disable/status]` | Install/configure Git Trident git hooks                          |
 |                | `git trident version [health/env]`                                       | Show tool version, system health check, and environment          |
 |                | `git trident version [check/update]`                                     | Check for updates or upgrade Git Trident to the latest version   |
 |                | `git trident uninstall [--force]`                                        | Completely remove Git Trident from your system                   |
+
+### Global Options
+
+These work with any command.
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Report what the command would do, and change nothing. Release and hotfix flows print the exact sequence they would perform and stop before their first write. |
+| `--yes`, `-y` | Never prompt for confirmation. Does *not* silence the merge-conflict prompt, which asks about work only a human can have done. |
+| `--no-color` | Disable coloured output. `NO_COLOR` and `GT_COLOR=never\|always\|auto` are also honoured. |
+| `--debug` | Verbose diagnostic output. |
+| `--help`, `-h` | Show help for the command. Never requires a repository, a config, or the network. |
+
+```bash
+git trident --dry-run production release finish 1.2.0   # see the plan, change nothing
+git trident --yes staging release finish 1.2.0          # unattended / CI
+git trident status --json | jq .synchronized            # machine-readable
+```
 
 ---
 

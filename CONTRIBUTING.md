@@ -101,6 +101,21 @@ inside [lib/git-trident-help.sh](lib/git-trident-help.sh):
 
 ### 🐚 Bash 3.2 cookbook
 
+**Why this is a hard rule.** macOS ships Bash 3.2.57 at `/bin/bash`, it cannot be
+replaced, and it is what `curl … | bash` runs on a Mac. A Bash 4+ construct passes on
+the author's machine and fails for every macOS user — so it is enforced by the test
+suite rather than left to review:
+
+- `tests/test_bash32_compat.sh` rejects Bash 4.0–4.3 constructs, `set -u`, CRLF line
+  endings and wrong git-index exec bits.
+- `tests/run_all.sh` runs the suite under the **platform's own** bash and warns loudly
+  when that is not 3.2, so a green run on Bash 5 is never mistaken for proof.
+
+The whole runtime is 3.2-clean. For a long time the installer alone needed Bash 4 — for
+a single associative array used as a colour map — and that one construct broke the
+documented install path entirely, because under `curl … | bash` the re-exec tried to run
+the `bash` binary as a shell script.
+
 Left column breaks on macOS. Right column works on every supported platform.
 
 | Instead of (Bash 4+)                 | Use (Bash 3.2-safe)                                                                               |

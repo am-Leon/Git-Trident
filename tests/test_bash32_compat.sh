@@ -126,7 +126,7 @@ for f in bin/* lib/*.sh hooks/*; do
     [ -n "$hit" ] && runtime_set_u="$runtime_set_u$f: $hit"$'\n'
 done
 if [ -z "$runtime_set_u" ]; then
-    assert_success 0 "No 'set -u' in bin/ lib/ hooks/ (unsafe on Bash 3.2 — see REMEDIATION_PLAN §0.3)"
+    assert_success 0 "No 'set -u' in bin/ lib/ hooks/ (unsafe on Bash 3.2 — see CONTRIBUTING.md)"
 else
     test_log "${RED}     offending lines:${NC}"; echo "$runtime_set_u" | sed 's/^/       /'
     assert_success 1 "No 'set -u' in bin/ lib/ hooks/"

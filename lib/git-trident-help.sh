@@ -63,17 +63,25 @@ Core Workflow Commands:
   staging changelog <version>           Generate developer changelog
 
 Utility Commands:
-  config [init|show|validate]    Manage, view and validate configuration
   doctor                         Diagnose environment, install, config and repo
+  status [--json]                Quick sync status (--json for scripts)
+  verify-sync [--brief|--json]   In-depth verification of branches and tags
   abort [--dry-run]              Unwind a partially-completed release or hotfix
-  push-all [remote]              Push all changes to remote
-  verify-sync [--brief]          Verify branch synchronization
-  cleanup [command]              Cleanup/Pruning for old staging tags & branches
-  status                         Quick sync status
+  push-all [remote]              Push all branches and tags to remote
+  cleanup <prune|sync> [target]  Prune deprecated tags, orphaned or stale branches
+  config [init|show|validate]    Manage, view and validate configuration
+  hooks [install-local|...]      Install, enable and inspect git hooks
   tags <env>                     Show available tags for environment
-  version [command]              Show version and system info
+  version [command]              Show version, health, environment; check/apply updates
   uninstall [--force]            Remove Git Trident from your system
   help                           Show this help message
+
+Global Options (valid with any command):
+  --dry-run                      Report what would happen; change nothing
+  --yes, -y                      Never prompt for confirmation
+  --no-color                     Disable coloured output (also honours NO_COLOR)
+  --debug                        Verbose diagnostic output
+  --help, -h                     Show help for the command
 
 Examples:
 EOF
@@ -889,6 +897,71 @@ show_staging_help() {
     esac
 }
 
+show_doctor_help() {
+    cat <<EOF
+Doctor Command
+==============
+
+Usage:
+  git trident doctor
+
+Diagnoses the five layers Git Trident depends on, in order, and stops once an
+upstream layer is broken — a bad configuration makes every repository-level
+answer meaningless, so reporting those too would only mislead.
+
+  1. Environment    bash version, required utilities
+  2. Installation   install root, directory layout, executables, PATH
+  3. Configuration  global and project config, required keys, mode, schema
+  4. Repository     branches, remote reachability, tags, orphaned sync branches,
+                    an interrupted merge, stale locks
+  5. Hooks          core.hooksPath and whether hooks are enabled
+
+Exit status:
+  0   healthy (possibly with warnings)
+  1   one or more problems found
+
+Works outside a Git repository: it reports what it can and says why the rest
+was skipped.
+
+Examples:
+  git trident doctor
+  git trident doctor --no-color
+EOF
+}
+
+show_abort_help() {
+    cat <<EOF
+Abort Command
+=============
+
+Usage:
+  git trident abort [--dry-run]
+
+Unwinds a release or hotfix that stopped partway through — after a conflict, a
+dropped connection or a Ctrl-C — when the repository is left in a state the
+tool itself refuses to continue from.
+
+Reports, then offers to undo:
+  • a merge still in progress, and its conflicted files
+  • the release or hotfix branch currently checked out
+  • tags for that version that exist only locally
+  • orphaned temp-rebase-* / temp-propagate-* branches
+  • locks held by an interrupted command
+
+Safety:
+  Only LOCAL, UNPUSHED refs are removed. Anything already on the remote is
+  reported and left alone — other people may have it, so removing it is a
+  decision for your team rather than for this command.
+
+Options:
+  --dry-run     Report the current state and stop; change nothing.
+
+Examples:
+  git trident abort --dry-run
+  git trident abort
+EOF
+}
+
 show_utility_help() {
     case "${1:-}" in
         "push-all")
@@ -914,6 +987,12 @@ show_utility_help() {
             ;;
         "hooks")
             show_hooks_help
+            ;;
+        "doctor")
+            show_doctor_help
+            ;;
+        "abort")
+            show_abort_help
             ;;
         *)
             show_utility_main_help
