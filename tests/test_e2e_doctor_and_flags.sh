@@ -35,6 +35,33 @@ assert_no_shell_errors "doctor produces no shell errors"
 assert_contains "$(gt_run_output)" "Everything checks out" "Reports a clean bill of health"
 
 # ===========================================================================
+# DF_02b — the other half of that check, which nothing covered.
+#
+# Running from a clone with nothing installed is a legitimate state, and doctor
+# should say so rather than report a clean bill of health. Until now the suite
+# asserted only the healthy case, and did so by accident: the fixture invoked
+# the binary by absolute path without setting PATH, so whether the warning
+# fired depended on whether the person running the tests had git-trident
+# installed. Both states are now asserted explicitly.
+# ===========================================================================
+start_test_case "df_02b_doctor_warns_when_not_on_path"
+
+# A minimal PATH that still has git but cannot contain an installed copy.
+gt_git_dir="$(dirname "$(command -v git)")"
+gt_restricted_path="$gt_git_dir:/usr/bin:/bin"
+
+gt_doctor_out="$(cd "$GT_FIXTURE_REPO" && PATH="$gt_restricted_path" \
+    "$GT_BIN/git-trident" doctor 2>&1 </dev/null)"
+gt_doctor_rc=$?
+
+assert_success "$gt_doctor_rc" "doctor still exits 0 when git-trident is not installed"
+assert_contains "$gt_doctor_out" "not on PATH" \
+    "doctor warns that git-trident is not on PATH"
+echo "$gt_doctor_out" | grep -q "Everything checks out" && gt_clean=1 || gt_clean=0
+[ "$gt_clean" -eq 0 ]
+assert_success "$?" "doctor does not claim a clean bill of health while a warning stands"
+
+# ===========================================================================
 # DF_03 — doctor reports real problems and exits non-zero
 # ===========================================================================
 start_test_case "df_03_doctor_detects_problems"

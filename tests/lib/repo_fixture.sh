@@ -152,7 +152,14 @@ gt_fixture_run() {
     # merge conflict genuinely requires a human. With an inherited stdin a test
     # that hits a conflict blocks forever instead of failing; with /dev/null the
     # read sees EOF, the default (No) applies, and the command exits non-zero.
-    "$GT_BIN/git-trident" "$@" >"$out_file" 2>"$err_file" </dev/null
+    # GT_BIN goes on PATH for the call.
+    #
+    # The binary is invoked by absolute path, so this looks redundant — it is
+    # not. `doctor` checks whether git-trident is reachable as `git trident`,
+    # and without this the answer came from the machine running the suite: it
+    # passed for anyone with the tool installed and failed for everyone else,
+    # CI included. A fixture must not read state from its host.
+    PATH="$GT_BIN:$PATH" "$GT_BIN/git-trident" "$@" >"$out_file" 2>"$err_file" </dev/null
     GT_RUN_STATUS=$?
 
     GT_RUN_STDOUT="$(cat "$out_file")"
