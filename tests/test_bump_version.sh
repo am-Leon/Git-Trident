@@ -29,6 +29,9 @@ EOF
     cat << 'EOF' > "$SANDBOX_DIR/tests/test_remote_installation.sh"
 # Dummy test file with version assertions
 assert_equals "$TRIDENT_VERSION" "1.0.2" "version matches"
+# A fixture that merely looks like a version. It must survive a bump: this is
+# the line whose real counterpart got rewritten into a false assertion.
+assert_equals "$(normalise "1.2.3")" "v1.2.3" "unrelated fixture"
 EOF
 
     # Dummy CHANGELOG with an [Unreleased] heading for the dating check
@@ -99,6 +102,16 @@ assert_success "$?" "Constants file is updated to 2.3.4"
 # Verify test assertions are updated
 grep -q '"2.3.4"' "$SANDBOX_DIR/tests/test_remote_installation.sh"
 assert_success "$?" "Test file assertions are updated to 2.3.4"
+
+# Only the TRIDENT_VERSION assertion may change. A blanket replace of every
+# quoted X.Y.Z rewrote a prefixing fixture's input and not its expected value,
+# producing "normalise(2.3.4) == v1.2.3" — green locally, red in CI.
+grep -q 'normalise "1.2.3".*"v1.2.3"' "$SANDBOX_DIR/tests/test_remote_installation.sh"
+assert_success "$?" "An unrelated version-shaped fixture is left untouched"
+
+bumped_count="$(grep -c '"2.3.4"' "$SANDBOX_DIR/tests/test_remote_installation.sh")"
+[ "$bumped_count" -eq 1 ]
+assert_success "$?" "Exactly one assertion was rewritten, not every version in the file"
 
 # The [Unreleased] heading must be dated. A published release whose changelog
 # still says "Unreleased" is how a changelog stops being believed.

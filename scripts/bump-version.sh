@@ -189,7 +189,12 @@ _sed_in_place "$CONSTANTS_FILE" "s/TRIDENT_VERSION=\".*\"/TRIDENT_VERSION=\"$NEW
 CHANGED_FILES+=("$CONSTANTS_FILE")
 
 echo -e "  Updating ${CYAN}tests/test_remote_installation.sh${NC}..."
-_sed_in_place "$TEST_FILE" "s/\"$CURRENT_VERSION\"/\"$NEW_VERSION\"/g"
+# Scoped to lines that assert TRIDENT_VERSION. A blanket replace of every
+# quoted X.Y.Z also rewrites unrelated fixtures — it once turned a prefixing
+# test into "normalise(0.2.0) == v0.1.1", which passed review and failed CI.
+# Dots are escaped so 0.1.1 cannot match 0x1y1.
+CURRENT_VERSION_RE="$(printf '%s' "$CURRENT_VERSION" | sed 's/\./\\./g')"
+_sed_in_place "$TEST_FILE" "/TRIDENT_VERSION/s/\"$CURRENT_VERSION_RE\"/\"$NEW_VERSION\"/g"
 CHANGED_FILES+=("$TEST_FILE")
 
 # Date the [Unreleased] heading. Without this the published release carries a

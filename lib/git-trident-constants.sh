@@ -4,7 +4,7 @@
 # =============================================================================
 
 # Core Versioning (Single Source of Truth)
-export TRIDENT_VERSION="0.1.1"
+export TRIDENT_VERSION="0.2.0"
 
 # Distribution and Repository Configuration
 export GITHUB_REPO="am-Leon/Git-Trident"

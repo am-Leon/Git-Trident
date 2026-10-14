@@ -5,7 +5,11 @@ name: CI
 # release path ran a *different*, weaker gate than the pull request did.
 on:
   push:
-    branches: [ main, develop ]
+    # release/** and hotfix/** are included because that is where the version
+    # bump lives under git-flow. Without them the bump gets no CI until after
+    # `release finish` has already merged it into main and tagged it — the one
+    # commit that most needs checking would be checked too late to matter.
+    branches: [ main, develop, 'release/**', 'hotfix/**' ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, develop ]
@@ -89,10 +93,14 @@ jobs:
           CONST_VER="$(grep 'TRIDENT_VERSION=' lib/git-trident-constants.sh | cut -d'"' -f2)"
           echo "Constants version: $CONST_VER"
 
+          # Only lines asserting TRIDENT_VERSION. Checking every quoted X.Y.Z in
+          # the file forces unrelated fixtures to track the project version,
+          # which is how a prefixing test ended up asserting the release number.
+          #
           # POSIX ERE, not grep -oP: PCRE is a GNU extension and is absent from
           # BSD grep, so -P would break the day this moves to a macOS runner.
-          TEST_VERSIONS="$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' \
-                           tests/test_remote_installation.sh | tr -d '"' | sort -u)"
+          TEST_VERSIONS="$(grep 'TRIDENT_VERSION' tests/test_remote_installation.sh \
+                           | grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' | sort -u)"
           echo "Test versions found: ${TEST_VERSIONS:-<none>}"
 
           for ver in $TEST_VERSIONS; do
