@@ -11,6 +11,18 @@ if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-constants.sh" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/git-trident-constants.sh"
 fi
 
+# Load the tag grammar (gt_regex_escape, gt_rc_suffix, gt_tag_*, gt_re_*).
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/git-trident-tagspec.sh"
+fi
+
+# Load repository context helpers (GT_REPO_ROOT / GT_GIT_DIR, gt_repo_path,
+# gt_git_path). Sourcing only DEFINES them; resolution happens in
+# load_project_config, because utility commands run outside a repository.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/git-trident-context.sh" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/git-trident-context.sh"
+fi
+
 # Configuration state tracking
 CONFIG_LOADED=${CONFIG_LOADED:-false}
 CONFIG_SOURCE=${CONFIG_SOURCE:-"none"}
@@ -35,6 +47,8 @@ OPTIONAL_CONFIG_VARS=(
     "REQUIRE_CLEAN_WORKING_TREE=true"
     "VALIDATE_REMOTE_CONNECTIVITY=true"
     "CONFIG_VALIDATION_MODE=strict"
+    "CONFIG_PARSER=strict"
+    "CONFIG_SCHEMA_VERSION=1"
     # Multi-platform configuration
     "PLATFORM_SPECIFIC_TAGS=false"
     "PLATFORMS="
@@ -62,9 +76,6 @@ OPTIONAL_CONFIG_VARS=(
     # Changelog & Release Notes
     "CHANGELOG_QA_EXCLUDED_PREFIXES="
     "CHANGELOG_RELEASE_EXCLUDED_PREFIXES=wip|cmd"
-    "CHANGELOG_WEBHOOK_URL="
-    "CHANGELOG_WEBHOOK_AUTH="
-    "CHANGELOG_WEBHOOK_FORMAT=slack"
 )
 
 # Keys that belong ONLY in the global config (~/$GLOBAL_CONFIG_FILE_NAME).
@@ -78,6 +89,7 @@ GLOBAL_ONLY_CONFIG_KEYS=(
     "VALIDATE_REMOTE_CONNECTIVITY"
     "REMOTE_TAG_CACHE_DURATION"
     "CONFIG_VALIDATION_MODE"
+    "CONFIG_PARSER"
     "DEBUG"
     "HOOKS_ENABLED"
     "GIT_TRIDENT_SKIP_HOOKS"
@@ -87,16 +99,38 @@ GLOBAL_ONLY_CONFIG_KEYS=(
 # COLOR AND LOGGING UTILITIES
 # =============================================================================
 
-# Color output (with fallback for non-TTY)
-if [[ -t 1 ]]; then
+# ---------------------------------------------------------------------------
+# Colour
+# ---------------------------------------------------------------------------
+# Decided by whether STDERR is a terminal, not stdout.
+#
+# Every log function writes to stderr, so testing `-t 1` asked the wrong
+# question: piping stdout (`git trident status > file`) stripped colour from
+# logs that were still going to the terminal, while piping only stderr
+# (`2> file`) wrote escape codes into the file.
+#
+# Precedence, highest first:
+#   GT_COLOR=never|always|auto   explicit override
+#   --no-color                   sets GT_COLOR=never before this file loads
+#   NO_COLOR set (any value)     the https://no-color.org convention
+#   auto                         colour when stderr is a terminal
+gt_setup_colors() {
+    local mode="${GT_COLOR:-auto}"
+
+    if [[ "$mode" != "always" ]]; then
+        if [[ "$mode" == "never" ]] || [[ -n "${NO_COLOR+x}" ]] || [[ ! -t 2 ]]; then
+            RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+            return 0
+        fi
+    fi
+
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     YELLOW='\033[1;33m'
     BLUE='\033[0;34m'
     NC='\033[0m' # No Color
-else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
-fi
+}
+gt_setup_colors
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1" >&2; }
 log_empty() { echo -e "${NC} $1" >&2; }
@@ -113,7 +147,103 @@ log_debug() { [[ "${DEBUG:-false}" == "true" ]] && echo -e "${BLUE}[DEBUG]${NC} 
 # _source_config_file  — internal helper
 # Sources a shell config file and returns 0 on success.
 # ---------------------------------------------------------------------------
-_source_config_file() {
+# Is this a key Git Trident recognises?
+gt_config_key_is_known() {
+    local key="$1" entry
+    for entry in "${REQUIRED_CONFIG_VARS[@]}"; do
+        [[ "$entry" == "$key" ]] && return 0
+    done
+    for entry in "${OPTIONAL_CONFIG_VARS[@]}"; do
+        [[ "${entry%%=*}" == "$key" ]] && return 0
+    done
+    return 1
+}
+
+gt_config_key_is_global_only() {
+    local key="$1" entry
+    for entry in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+        [[ "$entry" == "$key" ]] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _parse_config_file  — strict KEY=VALUE reader (CONFIG_PARSER=strict)
+# ---------------------------------------------------------------------------
+# Reads a config file WITHOUT executing it.
+#
+# The alternative, `set -a; source "$file"; set +a`, has two real problems:
+#
+#   1. git-trident-config is COMMITTED to the repository, so cloning a project
+#      and running any Git Trident command executes whatever that file contains.
+#      For a tool designed to be shared across a team, that is a hole.
+#   2. `set -a` exports every assignment. That is how CONFIG_LOADED=true leaked
+#      into child processes and made them skip validation, and it lets a stray
+#      variable in the user's shell silently override project settings.
+#
+# It also removes the need for the snapshot/restore workaround around
+# GLOBAL_ONLY_CONFIG_KEYS: a global-only key found in a project file is simply
+# never read, instead of being read and then undone with eval.
+#
+# Arguments: <file> <scope: global|project>
+_parse_config_file() {
+    local config_file="$1" scope="$2"
+    local line key val
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip blanks and comments
+        case "$line" in
+            ''|'#'*) continue ;;
+        esac
+        # Accept:  KEY=value  /  export KEY=value  (leading whitespace allowed)
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)=(.*)$ ]] || continue
+
+        key="${BASH_REMATCH[2]}"
+        val="${BASH_REMATCH[3]}"
+
+        # Trim leading whitespace
+        val="${val#"${val%%[![:space:]]*}"}"
+
+        # A quoted value runs to its closing quote; anything after it (such as
+        # an inline comment) is discarded. An unquoted value ends at the first
+        # whitespace-then-# sequence. Handling quotes FIRST matters: a value
+        # like  "-rc-"   # comment  starts with a quote but does not end with
+        # one, so a naive "is it quoted?" test leaves the comment attached.
+        case "$val" in
+            \"*) val="${val#\"}"; val="${val%%\"*}" ;;
+            \'*) val="${val#\'}"; val="${val%%\'*}" ;;
+            *)
+                case "$val" in
+                    *[[:space:]]#*) val="${val%%[[:space:]]#*}" ;;
+                esac
+                # Trim trailing whitespace
+                val="${val%"${val##*[![:space:]]}"}"
+                ;;
+        esac
+
+        if ! gt_config_key_is_known "$key"; then
+            log_warn "Unknown configuration key ignored: $key ($config_file)"
+            continue
+        fi
+
+        if [[ "$scope" == "project" ]] && gt_config_key_is_global_only "$key"; then
+            # Warned about separately by _warn_global_only_keys_in_project_config
+            log_debug "Ignoring global-only key in project config: $key"
+            continue
+        fi
+
+        printf -v "$key" '%s' "$val"
+    done < "$config_file"
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _source_config_file — legacy loader (CONFIG_PARSER=legacy)
+# ---------------------------------------------------------------------------
+# Kept for one minor version so projects using shell expressions inside their
+# config have a migration path. Set CONFIG_PARSER=legacy to opt back in.
+_source_config_file_legacy() {
     local config_file="$1"
     set -a
     # shellcheck source=/dev/null
@@ -121,6 +251,16 @@ _source_config_file() {
     local status=$?
     set +a
     return $status
+}
+
+# Dispatcher used by load_project_config.
+_source_config_file() {
+    local config_file="$1" scope="${2:-project}"
+    if [[ "${CONFIG_PARSER:-strict}" == "legacy" ]]; then
+        _source_config_file_legacy "$config_file"
+    else
+        _parse_config_file "$config_file" "$scope"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -156,14 +296,31 @@ _warn_global_only_keys_in_project_config() {
 # overridden back to the global value after the project file is sourced.
 # ---------------------------------------------------------------------------
 load_project_config() {
-    # Prevent duplicate configuration loading within the same session
+    # Prevent duplicate configuration loading within the same session.
+    #
+    # The flag alone is not sufficient evidence. CONFIG_LOADED can arrive from
+    # the ENVIRONMENT — inherited from a parent process, or exported by a user
+    # or a test fixture — in which case the values it claims to vouch for may
+    # not be set at all. Short-circuiting then yields an empty configuration
+    # and nonsense results (branch desynchronisation reported on a synchronised
+    # repository). Require a required key to actually be present.
     if [[ "$CONFIG_LOADED" == "true" ]]; then
-        log_debug "Configuration already loaded from: $CONFIG_SOURCE"
-        return 0
+        # Trust the flag only if SOMETHING was actually configured. Callers that
+        # set CONFIG_LOADED deliberately (hook fixtures, tests) also set the keys
+        # they care about; an inherited flag from a parent process comes with
+        # nothing, because configuration values are no longer exported.
+        if [[ -n "${PRODUCTION_BRANCH:-}" || -n "${STAGING_TAG_PREFIX:-}" || -n "${COMMIT_PREFIXES:-}" ]]; then
+            log_debug "Configuration already loaded from: ${CONFIG_SOURCE:-caller}"
+            return 0
+        fi
+        log_debug "CONFIG_LOADED was set but no configuration is present; reloading."
+        CONFIG_LOADED=false
     fi
 
     # ── Guard 1: Are we inside a Git repository? ──
-    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    # gt_resolve_repo_context also establishes GT_REPO_ROOT / GT_GIT_DIR, which
+    # every path below depends on.
+    if ! gt_resolve_repo_context; then
         if [[ "${SUPPRESS_CONFIG_ERRORS:-false}" != "true" ]]; then
             log_error "❌ Not inside a Git repository."
             log_error "   Git Trident only works inside a Git project."
@@ -173,9 +330,11 @@ load_project_config() {
     fi
 
     local global_config="$HOME/$GLOBAL_CONFIG_FILE_NAME"
+    # Anchored to the REPOSITORY ROOT, not the current directory, so every
+    # command works from anywhere inside the working tree.
     local project_config_files=(
-        "./$CONFIG_FILE_NAME"    # Project root (explicit, committed)
-        "./.$CONFIG_FILE_NAME"   # Project root (hidden / git ignored)
+        "$(gt_repo_path "$CONFIG_FILE_NAME")"    # Project root (explicit, committed)
+        "$(gt_repo_path ".$CONFIG_FILE_NAME")"   # Project root (hidden / git ignored)
     )
 
     # ------------------------------------------------------------------
@@ -184,7 +343,7 @@ load_project_config() {
     local global_loaded=false
     if [[ -f "$global_config" ]]; then
         log_debug "Loading global configuration from: $global_config"
-        if _source_config_file "$global_config"; then
+        if _source_config_file "$global_config" "global"; then
             global_loaded=true
             log_debug "✓ Global configuration loaded: $global_config"
         else
@@ -194,11 +353,21 @@ load_project_config() {
         log_debug "Global config not found: $global_config"
     fi
 
-    # Snapshot global-only values so we can restore them after the project
-    # file is sourced (project file must not override these).
-    for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
-        eval "local _global_snapshot_$_key=\"\${!_key:-}\""
-    done
+    # NOTE: the strict parser never reads a global-only key out of a project
+    # file, so there is nothing to undo afterwards. This used to snapshot every
+    # global-only value into dynamically-named locals via eval, source the
+    # project file, then eval them back — a workaround that only existed because
+    # `source` could not be told which keys to ignore.
+    #
+    # Under CONFIG_PARSER=legacy the project file is still sourced wholesale, so
+    # the restore below is kept for that path only.
+    local _using_legacy_parser=false
+    if [[ "${CONFIG_PARSER:-strict}" == "legacy" ]]; then
+        _using_legacy_parser=true
+        for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+            eval "local _global_snapshot_$_key=\"\${!_key:-}\""
+        done
+    fi
 
     # ------------------------------------------------------------------
     # Step 2 — Overlay the project config (if present)
@@ -218,7 +387,7 @@ load_project_config() {
         # Warn if project file contains global-only keys
         _warn_global_only_keys_in_project_config "$project_file"
 
-        if _source_config_file "$project_file"; then
+        if _source_config_file "$project_file" "project"; then
             project_loaded=true
             log_debug "✓ Project configuration loaded: $project_file"
         else
@@ -226,14 +395,17 @@ load_project_config() {
             return 1
         fi
 
-        # Restore global-only values so project file cannot override them
-        for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
-            eval "local _global_val=\"\${_global_snapshot_$_key:-}\""
-            if [[ -n "$_global_val" ]]; then
-                export "$_key"="$_global_val"
-                log_debug "Restored global-only key: $_key=${_global_val}"
-            fi
-        done
+        # Legacy path only: `source` cannot be told which keys to skip, so the
+        # global-only values are put back after the fact.
+        if [[ "$_using_legacy_parser" == "true" ]]; then
+            for _key in "${GLOBAL_ONLY_CONFIG_KEYS[@]}"; do
+                eval "local _global_val=\"\${_global_snapshot_$_key:-}\""
+                if [[ -n "$_global_val" ]]; then
+                    export "$_key"="$_global_val"
+                    log_debug "Restored global-only key: $_key=${_global_val}"
+                fi
+            done
+        fi
     fi
 
     # ------------------------------------------------------------------
@@ -249,8 +421,11 @@ load_project_config() {
             log_error "   - Global (machine) : ~/$GLOBAL_CONFIG_FILE_NAME  (installed automatically)"
             log_empty ""
             log_error "📝 Re-run the installer, or copy the templates manually:"
-            log_error "   Global  : cp \"\$HOME/$PROJECT_DIR_NAME/templates/git-trident-global-config\" ~/$GLOBAL_CONFIG_FILE_NAME"
-            log_error "   Project : cp \"\$HOME/$PROJECT_DIR_NAME/templates/git-trident-config\" ./$CONFIG_FILE_NAME"
+            # Derived from where this installation actually lives, not assumed
+            # to be $HOME/.git-trident — install.sh accepts a custom path.
+            local _tpl="${GT_INSTALL_ROOT:-$HOME/$PROJECT_DIR_NAME}/templates"
+            log_error "   Global  : cp \"$_tpl/git-trident-global-config\" ~/$GLOBAL_CONFIG_FILE_NAME"
+            log_error "   Project : cp \"$_tpl/git-trident-config\" ./$CONFIG_FILE_NAME"
         fi
         return 1
     fi
@@ -272,14 +447,23 @@ load_project_config() {
 
     # Record the primary source for diagnostics
     if [[ -n "$project_file" ]]; then
-        export CONFIG_SOURCE="$project_file (+ $global_config)"
+        CONFIG_SOURCE="$project_file (+ $global_config)"
     else
-        export CONFIG_SOURCE="$global_config"
+        CONFIG_SOURCE="$global_config"
     fi
-    export CONFIG_LOADED=true
+    # NOT exported. Under the strict parser the values are set with `printf -v`
+    # rather than `set -a`, so they do not cross a process boundary. Exporting
+    # only the FLAG made child processes short-circuit load_project_config and
+    # then find every setting empty — `git trident status` reported branch
+    # desynchronisation on a perfectly synchronised repository, while running
+    # git-trident-verify-sync directly worked.
+    #
+    # Each process loads its own configuration. That is a file read, and it
+    # keeps configuration out of the environment entirely.
+    CONFIG_LOADED=true
 
     # Set validation mode from whichever config set it, or default to strict
-    export CONFIG_VALIDATION_MODE="${CONFIG_VALIDATION_MODE:-strict}"
+    CONFIG_VALIDATION_MODE="${CONFIG_VALIDATION_MODE:-strict}"
 
     # ------------------------------------------------------------------
     # Step 4 — Validate & apply defaults
@@ -490,37 +674,6 @@ validate_all_platform_names() {
     done
 }
 
-# Validate platform-specific configuration
-validate_platform_config() {
-    local errors_ref_name="$1"  # Name of the errors array
-
-    # Validate PLATFORMS is set and not empty
-    if [[ -z "${PLATFORMS:-}" ]]; then
-        eval "$errors_ref_name+=(\"PLATFORMS cannot be empty when PLATFORM_SPECIFIC_TAGS=true\")"
-        return
-    fi
-
-    # Validate PLATFORMS is a space-separated list
-    if [[ ! "$PLATFORMS" =~ ^[a-zA-Z0-9_-]+( [a-zA-Z0-9_-]+)*$ ]]; then
-        eval "$errors_ref_name+=(\"PLATFORMS must be a space-separated list of platform names\")"
-        eval "$errors_ref_name+=(\"Example: PLATFORMS=\\\"android ios web\\\"\")"
-        return
-    fi
-    
-    # Log platform configuration
-    log_debug "Platform-specific mode enabled"
-    log_debug "Supported platforms: $PLATFORMS"
-    log_debug "Common platforms: $COMMON_PLATFORMS"
-    log_debug "Independent platforms: $INDEPENDENT_PLATFORMS"
-
-    # Validate each platform name
-    for platform in $PLATFORMS; do
-        if [[ ! "$platform" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
-            eval "$errors_ref_name+=(\"Invalid platform name: '$platform'. Must start with letter and contain only letters, numbers, hyphens, or underscores.\")"
-        fi
-    done
-}
-
 # Setup optional configuration defaults
 setup_optional_config_defaults() {
     for optional_var in "${OPTIONAL_CONFIG_VARS[@]}"; do
@@ -528,10 +681,9 @@ setup_optional_config_defaults() {
         local default_value="${optional_var#*=}"
         
         if [[ -z "${!var_name:-}" ]]; then
-            export "$var_name"="$default_value"
+            # Plain assignment, not export: see the note on CONFIG_LOADED above.
+            printf -v "$var_name" '%s' "$default_value"
             log_debug "Set default for optional $var_name: $default_value"
-        else
-            export "$var_name"="${!var_name}"
         fi
     done
 }
@@ -554,15 +706,6 @@ is_platform_specific_mode() {
     [[ "${PLATFORM_SPECIFIC_TAGS:-false}" == "true" ]]
 }
 
-# Get list of platforms as array
-get_platforms_array() {
-    if is_platform_specific_mode && [[ -n "${PLATFORMS:-}" ]]; then
-        echo "$PLATFORMS"  # Return as space-separated string
-    else
-        echo ""
-    fi
-}
-
 # Check if a platform is common/shared
 is_common_platform() {
     local platform="$1"
@@ -572,8 +715,17 @@ is_common_platform() {
         return 1
     fi
 
-    # Use regex pattern to check if platform is in COMMON_PLATFORMS
-    [[ " $COMMON_PLATFORMS " =~ " $platform " ]]
+    # Whole-word membership test on a space-separated list.
+    #
+    # This was `[[ " $LIST " =~ " $platform " ]]`. Quoting the right-hand side of
+    # =~ makes bash match LITERALLY rather than as a regex, which happened to be
+    # the intent — but it reads as a regex match, and shellcheck flags it (SC2076)
+    # precisely because that discrepancy is usually a bug. `case` says what is
+    # meant, is POSIX, and behaves identically.
+    case " $COMMON_PLATFORMS " in
+        *" $platform "*) return 0 ;;
+    esac
+    return 1
 }
 
 # Check if a platform is independent
@@ -585,20 +737,17 @@ is_independent_platform() {
         return 1
     fi
 
-    # Use regex pattern to check if platform is in INDEPENDENT_PLATFORMS
-    [[ " $INDEPENDENT_PLATFORMS " =~ " $platform " ]]
-}
-
-# Get all dependent platforms for a common platform
-# Returns all INDEPENDENT_PLATFORMS (since common → all independent)
-get_dependent_platforms() {
-    if ! is_platform_specific_mode; then
-        log_error "Cannot get dependent platforms in single-environment mode"
-        echo ""
-        return 1
-    fi
-
-    echo "$INDEPENDENT_PLATFORMS"
+    # Whole-word membership test on a space-separated list.
+    #
+    # This was `[[ " $LIST " =~ " $platform " ]]`. Quoting the right-hand side of
+    # =~ makes bash match LITERALLY rather than as a regex, which happened to be
+    # the intent — but it reads as a regex match, and shellcheck flags it (SC2076)
+    # precisely because that discrepancy is usually a bug. `case` says what is
+    # meant, is POSIX, and behaves identically.
+    case " $INDEPENDENT_PLATFORMS " in
+        *" $platform "*) return 0 ;;
+    esac
+    return 1
 }
 
 # Get platform type (common or independent)
@@ -718,8 +867,141 @@ assert_clean_working_tree() {
 }
 
 # =============================================================================
+# DRY RUN
+# =============================================================================
+#
+# A dry run that quietly performs some mutations is worse than none at all, so
+# this is enforced at the point of mutation and the flows STOP before their
+# first write rather than trying to simulate a merge they cannot predict.
+#
+# GT_DRY_RUN is exported by bin/git-trident so it survives the `exec` into a
+# subcommand. Like --yes, it is a per-invocation runtime flag rather than
+# configuration.
+
+gt_is_dry_run() {
+    [[ "${GT_DRY_RUN:-false}" == "true" ]]
+}
+
+# Report an action that was NOT taken.
+gt_would() {
+    log_info "   [dry-run] would $1"
+}
+
+# Announce that a flow is stopping before it changes anything.
+gt_dry_run_stop() {
+    log_empty ""
+    log_warn "🔍 DRY RUN — nothing was changed."
+    log_info "   Re-run without --dry-run to perform the steps above."
+}
+
+# =============================================================================
+# JSON OUTPUT
+# =============================================================================
+#
+# Machine-readable output for scripting and CI. This is only usable because logs
+# go to stderr (A10): JSON on stdout would otherwise be interleaved with log
+# lines and unparseable.
+#
+# Escaping covers what can actually appear in a branch name, tag name or path:
+# backslash, double quote, tab and carriage return. Newlines cannot appear in a
+# git ref name, and are stripped defensively rather than encoded.
+
+gt_json_escape() {
+    printf '%s' "$1" \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+        | tr '\t' ' ' | tr -d '\r\n'
+}
+
+# gt_json_field <name> <value> [last]
+# Emits  "name": "value",   (or without the comma when `last` is given)
+gt_json_field() {
+    local sep=","
+    [ -n "${3:-}" ] && sep=""
+    printf '  "%s": "%s"%s\n' "$1" "$(gt_json_escape "$2")" "$sep"
+}
+
+# gt_json_raw <name> <raw> [last] — for numbers, booleans and nested values
+gt_json_raw() {
+    local sep=","
+    [ -n "${3:-}" ] && sep=""
+    printf '  "%s": %s%s\n' "$1" "$2" "$sep"
+}
+
+# gt_json_array <item...> — a JSON array of strings on one line
+gt_json_array() {
+    local out="[" first=true item
+    for item in "$@"; do
+        [ -z "$item" ] && continue
+        if [ "$first" = true ]; then first=false; else out="$out,"; fi
+        out="$out\"$(gt_json_escape "$item")\""
+    done
+    printf '%s]' "$out]" | sed 's/]]$/]/'
+}
+
+# =============================================================================
+# GIT COMMAND WRAPPER
+# =============================================================================
+
+# Run a git command, capture BOTH streams, and surface the error when it fails.
+#
+# The codebase had ~160 sites sending git's stderr to /dev/null. For read-only
+# probes (`rev-parse`, `show-ref`) that is a legitimate existence test, but for
+# mutating commands it meant real failures were invisible or — worse —
+# misattributed. interactive_merge reported "merge conflict" for an invalid
+# strategy flag, and `cleanup prune` reported success while deleting nothing.
+#
+# Output is echoed on stdout so callers can inspect it; the exit status is git's.
+#
+# Usage:
+#   output=$(gt_git tag -a "$name" "$ref" -m "$msg") || { log_error "$output"; return 1; }
+gt_git() {
+    local output rc
+    output=$(git "$@" 2>&1)
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        log_debug "git $* -> exit $rc: $output"
+    fi
+    printf '%s' "$output"
+    return $rc
+}
+
+# Run a git command and, on failure, log the error with a caller-supplied
+# context line. Returns git's exit status.
+gt_git_checked() {
+    local context="$1"; shift
+    local output rc
+    output=$(git "$@" 2>&1)
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        log_error "$context"
+        while IFS= read -r _gt_line; do
+            [ -n "$_gt_line" ] && log_empty "   $_gt_line"
+        done <<< "$output"
+    fi
+    return $rc
+}
+
+# =============================================================================
 # GIT LOG UTILITIES
 # =============================================================================
+
+# Count non-empty lines in a string.
+#
+# `echo "" | wc -l` returns 1, not 0, because echo emits a newline. Counting a
+# possibly-empty list that way reports one phantom item, which in platform mode
+# made push-all iterate once over an empty string and fail with
+# "Failed to push 1 tags:" when there was nothing to push.
+#
+# `grep -c .` counts lines containing at least one character, so an empty or
+# whitespace-only string correctly yields 0.
+count_lines() {
+    local value="$1"
+    if [[ -z "$value" ]]; then
+        echo 0
+        return 0
+    fi
+    printf '%s\n' "$value" | grep -c . | tr -d ' '
+}
 
 # Count commits in range
 git_log_count() {
@@ -754,10 +1036,9 @@ get_current_branch() {
     git branch --show-current 2>/dev/null || git symbolic-ref --short HEAD 2>/dev/null
 }
 
-# Check if it's a valid git reference (branch, tag, or commit)
-is_valid_tag() {
-    git rev-parse "$1" >/dev/null 2>&1
-}
+# NOTE: is_valid_tag lives in git-trident-version-utils.sh, which owns tag
+# concerns. An identical copy used to be defined here too; whichever file was
+# sourced last silently won.
 
 # Show available tags for environment
 show_available_tags() {
@@ -788,10 +1069,26 @@ confirm_action() {
     local message="$1"
     local default="${2:-false}"
 
+    # --yes / --non-interactive. Exported by bin/git-trident so it survives the
+    # `exec` into a subcommand; it is a per-invocation runtime flag, not
+    # configuration, which is why it travels in the environment while config
+    # deliberately does not.
+    if [[ "${GT_ASSUME_YES:-false}" == "true" ]]; then
+        log_debug "Auto-confirming (--yes): $message"
+        return 0
+    fi
+
     # Respect REQUIRE_CONFIRMATION (primary developer tool)
-    if [[ "$REQUIRE_CONFIRMATION" == "false" ]]; then
+    if [[ "${REQUIRE_CONFIRMATION:-true}" == "false" ]]; then
         log_debug "Auto-confirming action due to REQUIRE_CONFIRMATION=false: $message"
         return 0
+    fi
+
+    # Non-interactive with no explicit --yes: refuse rather than block forever.
+    if [[ ! -t 0 ]] && [[ ! -r /dev/tty ]]; then
+        log_warn "No terminal available to confirm: $message"
+        log_info "Pass --yes to proceed without confirmation."
+        return 1
     fi
 
     while true; do
@@ -813,9 +1110,14 @@ confirm_action() {
     done
 }
 
-# Force confirmation from user — always prompts even if REQUIRE_CONFIRMATION=false.
-# Use this for safety-critical actions that MUST have human review,
-# e.g. resolving merge conflicts when CONFLICT_STRATEGY=interactive.
+# Force confirmation from user — always prompts even if REQUIRE_CONFIRMATION=false
+# AND even with --yes. Use this for safety-critical actions that MUST have human
+# review, e.g. resolving merge conflicts when CONFLICT_STRATEGY=interactive.
+#
+# --yes deliberately does not apply here. Auto-confirming "have you resolved the
+# conflicts?" would answer yes on the user's behalf about work only they can
+# have done. In a non-interactive run the read sees EOF, the default (No)
+# applies, and the operation aborts — which is the correct outcome.
 force_confirm_action() {
     local message="$1"
     local default="${2:-false}"
@@ -951,40 +1253,58 @@ interactive_merge() {
         return 1
     fi
 
-    # Determine merge strategy based on CONFLICT_STRATEGY
-    local merge_strategy_args=""
+    # Determine merge strategy based on CONFLICT_STRATEGY.
+    #
+    # Each flag must be a SEPARATE argv element. Previously this was built as a
+    # single string "-X ours", which git received as one argument:
+    #     git merge --no-ff "-X ours" <src> -m <msg>
+    #     fatal: unknown strategy option: -X ours
+    # so prefer-ours / prefer-theirs never worked at all.
+    local strategy_args=()
     case "${CONFLICT_STRATEGY:-interactive}" in
         "prefer-ours")
-            merge_strategy_args="-X ours"
+            strategy_args=(-X ours)
             log_info "Using merge strategy: prefer-ours"
             ;;
         "prefer-theirs")
-            merge_strategy_args="-X theirs"
+            strategy_args=(-X theirs)
             log_info "Using merge strategy: prefer-theirs"
             ;;
         "interactive"|*)
-            merge_strategy_args=""
+            strategy_args=()
             ;;
     esac
 
-    # Build merge command as array to avoid empty argument issues
-    local merge_cmd=(git merge --no-ff)
-    if [ -n "$merge_strategy_args" ]; then
-        merge_cmd+=("$merge_strategy_args")
-    fi
     # Prepend bypass marker for tool-generated commits
     local message_with_marker="[flow]: $commit_message"
-    merge_cmd+=("$source_ref" -m "$message_with_marker")
 
-    # Perform merge
-    if "${merge_cmd[@]}" 2>/dev/null; then
+    # NOTE: ${arr[@]+"${arr[@]}"} rather than "${arr[@]}". `interactive` is the
+    # default, so strategy_args is EMPTY on the common path, and on Bash 3.2
+    # expanding an empty array under `set -u` raises "unbound variable".
+    local merge_output merge_rc
+    merge_output=$(git merge --no-ff ${strategy_args[@]+"${strategy_args[@]}"} \
+                             "$source_ref" -m "$message_with_marker" 2>&1)
+    merge_rc=$?
+
+    if [ $merge_rc -eq 0 ]; then
         log_info "✓ Successfully merged $source_ref into $target_branch"
         return 0
-    else
-        # Merge conflict detected - handle interactively
+    fi
+
+    # A non-zero exit is NOT necessarily a conflict. git's stderr used to be sent
+    # to /dev/null, so an invalid option, a missing ref or a dirty tree were all
+    # reported to the user as "merge conflict detected" and they were dropped into
+    # a conflict-resolution prompt with no conflict to resolve. Distinguish them.
+    if has_unresolved_conflicts; then
         handle_merge_conflict "$target_branch" "$source_ref" "$context"
         return $?
     fi
+
+    log_error "❌ Merge of $source_ref into $target_branch failed (not a conflict):"
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && log_empty "   $_line"
+    done <<< "$merge_output"
+    return 1
 }
 
 # Handle merge conflict with user interaction
@@ -1015,7 +1335,7 @@ handle_merge_conflict() {
     log_empty ""
     if force_confirm_action "Have you resolved the conflicts for merging $source_ref into $target_branch${context:+ ($context)} and ready to continue?"; then
         # Check if we're still in a merge state
-        if [ -f ".git/MERGE_HEAD" ]; then
+        if [ -f "$(gt_git_path MERGE_HEAD)" ]; then
             # Still in merge - check if conflicts are resolved
             if has_unresolved_conflicts; then
                 log_error "Conflicts still exist! Please resolve all conflicts first."
@@ -1069,13 +1389,24 @@ verify_step() {
     local success_message="$3"
 
     log_step "$step_name..."
-    if eval "$command" >/dev/null 2>&1; then
+
+    # Capture the output instead of discarding it. Every checkout, tag and
+    # branch creation in the release flows goes through here, and a bare
+    # "✗ Failed: Creating staging tag" with no reason is close to useless.
+    local output rc
+    output=$(eval "$command" 2>&1)
+    rc=$?
+
+    if [ $rc -eq 0 ]; then
         log_info "✓ $success_message"
         return 0
-    else
-        log_error "✗ Failed: $step_name"
-        return 1
     fi
+
+    log_error "✗ Failed: $step_name"
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && log_empty "   $_line"
+    done <<< "$output"
+    return 1
 }
 
 # =============================================================================
@@ -1150,7 +1481,7 @@ sync_to_develop() {
 # Cross-platform atomic locking
 acquire_lock() {
     local lock_name="$1"
-    local lock_dir=".git/git-trident-locks"
+    local lock_dir="$(gt_git_path git-trident-locks)"
     local lock_path="$lock_dir/$lock_name"
     local max_wait=30
     local waited=0
@@ -1179,7 +1510,7 @@ acquire_lock() {
 # Release lock
 release_lock() {
     local lock_name="$1"
-    local lock_dir=".git/git-trident-locks"
+    local lock_dir="$(gt_git_path git-trident-locks)"
     local lock_path="$lock_dir/$lock_name"
 
     if [[ -d "$lock_path" ]]; then
@@ -1205,17 +1536,6 @@ detect_platform() {
 
 # Initialize platform detection
 OS_PLATFORM=$(detect_platform)
-
-# Cross-platform path normalization
-normalize_path() {
-    local path="$1"
-    if [[ "$OS_PLATFORM" == "windows" ]]; then
-        # Convert to Windows-style path if needed, but keep POSIX for Git Bash
-        echo "$path" | sed 's/\\/\//g'
-    else
-        echo "$path"
-    fi
-}
 
 # Cross-platform stat command for cache age checking
 get_file_age() {
@@ -1258,24 +1578,6 @@ sed_in_place() {
             ;;
         *)
             sed -i "$script" "$file"
-            ;;
-    esac
-}
-
-# Ensure consistent sorting across platforms
-safe_sort() {
-    LC_ALL=C sort "$@"
-}
-
-# Cross-platform temporary file creation
-create_temp_file() {
-    case "$OS_PLATFORM" in
-        windows)
-            # Use Windows-compatible temp file creation
-            mktemp 2>/dev/null || echo "/tmp/git-trident-temp.$$"
-            ;;
-        *)
-            mktemp
             ;;
     esac
 }

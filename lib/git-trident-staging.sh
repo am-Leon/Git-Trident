@@ -16,7 +16,7 @@ source "$SCRIPT_DIR/git-trident-version-utils.sh"
 # VALIDATION FUNCTIONS
 # =============================================================================
 
-validate_release_branch_exists() {
+stg_validate_release_branch_exists() {
     local version="$1"
     local release_branch="${RELEASE_STAGING_PREFIX}${version}"
 
@@ -30,7 +30,7 @@ validate_release_branch_exists() {
     fi
 }
 
-validate_hotfix_branch_exists() {
+stg_validate_hotfix_branch_exists() {
     local version="$1"
     local hotfix_branch="${HOTFIX_STAGING_PREFIX}${version}"
 
@@ -144,6 +144,14 @@ create_staging_release_branch() {
     
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "check out $starting_point"
+        gt_would "create branch $release_branch"
+        gt_would "(on finish) create tag $staging_tag"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Checkout starting point
@@ -157,7 +165,7 @@ create_staging_release_branch() {
         "Created and switched to $release_branch"
 }
 
-show_release_preparation_summary() {
+stg_show_release_preparation_summary() {
     local release_branch="$1"
     local version="$2"
     local starting_point="$3"
@@ -190,7 +198,7 @@ staging_release_start() {
 
     # Show summary
     local release_branch="${RELEASE_STAGING_PREFIX}${version}"
-    show_release_preparation_summary "$release_branch" "$version" "$starting_point"
+    stg_show_release_preparation_summary "$release_branch" "$version" "$starting_point"
 }
 
 # =============================================================================
@@ -266,7 +274,7 @@ sync_staging_to_develop_after_release() {
     return 0
 }
 
-show_release_completion_summary() {
+stg_show_release_completion_summary() {
     local version="$1"
     local rc_number="$2"
     local tag_name="$3"
@@ -311,10 +319,20 @@ staging_release_finish() {
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "create tag $tag_name from $release_branch"
+        gt_would "merge $release_branch into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $release_branch"
+        [ "${AUTO_PUSH_ON_FINISH:-false}" = "true" ] && gt_would "push branches and tags to $REMOTE"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Validate release branch exists
-    if ! validate_release_branch_exists "$version"; then
+    if ! stg_validate_release_branch_exists "$version"; then
         log_error "Cannot finish staging release - branch not found"
         log_info "Please run: git trident staging release start $version first"
         exit 1
@@ -346,7 +364,7 @@ staging_release_finish() {
     auto_push_if_enabled "$version"
 
     # Step 6: Show summary
-    show_release_completion_summary "$version" "$rc_number" "$tag_name"
+    stg_show_release_completion_summary "$version" "$rc_number" "$tag_name"
 
     return 0
 }
@@ -426,6 +444,14 @@ create_staging_hotfix_branch() {
     log_info "Will create tag: $staging_tag"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "check out $latest_rc"
+        gt_would "create branch $hotfix_branch"
+        gt_would "(on finish) create tag $staging_tag"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Checkout the latest RC for this version
@@ -439,7 +465,7 @@ create_staging_hotfix_branch() {
         "Created and switched to $hotfix_branch"
 }
 
-show_hotfix_preparation_summary() {
+stg_show_hotfix_preparation_summary() {
     local hotfix_branch="$1"
     local version="$2"
     local latest_rc="$3"
@@ -469,14 +495,14 @@ staging_hotfix_start() {
 
     # Show summary
     local hotfix_branch="${HOTFIX_STAGING_PREFIX}${version}"
-    show_hotfix_preparation_summary "$hotfix_branch" "$version" "$latest_rc"
+    stg_show_hotfix_preparation_summary "$hotfix_branch" "$version" "$latest_rc"
 }
 
 # =============================================================================
 # HOTFIX COMPLETION OPERATIONS (WITH CLEAN MERGE CHAIN)
 # =============================================================================
 
-show_hotfix_changes() {
+stg_show_hotfix_changes() {
     local hotfix_branch="$1"
     local latest_rc="$2"
     local tag_name="$3"
@@ -584,7 +610,7 @@ check_hotfix_impact() {
     fi
 }
 
-show_hotfix_completion_summary() {
+stg_show_hotfix_completion_summary() {
     local version="$1"
     local rc_number="$2"
     local tag_name="$3"
@@ -610,8 +636,22 @@ show_hotfix_completion_summary() {
 staging_hotfix_finish() {
     local version="$1"
     local hotfix_branch="${HOTFIX_STAGING_PREFIX}${version}"
+
+    # Hold the RC lock across "allocate number -> create tag".
+    #
+    # get_next_rc_number used to try to lock internally and released the lock
+    # before returning, so the critical section — which only ends once the tag
+    # exists — was never actually covered. The trap ensures an interrupted
+    # command does not leave the lock directory behind.
+    if ! gt_acquire_rc_lock; then
+        log_error "Could not acquire the RC allocation lock."
+        log_info  "Another Git Trident operation may be running in this repository."
+        return 1
+    fi
+    trap 'gt_release_rc_lock' EXIT INT TERM
+
     local rc_number=$(get_next_rc_number "$version")
-    
+
     local suffix="$(get_rc_suffix)"
     local tag_name="${STAGING_TAG_PREFIX}${version}${suffix}${rc_number}"
     local latest_rc=$(get_latest_rc_for_version "$version")
@@ -630,10 +670,21 @@ staging_hotfix_finish() {
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "create tag $tag_name from $hotfix_branch"
+        gt_would "merge $hotfix_branch into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $hotfix_branch"
+        gt_dry_run_stop
+        gt_release_rc_lock
+        trap - EXIT INT TERM
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Validate hotfix branch exists
-    if ! validate_hotfix_branch_exists "$version"; then
+    if ! stg_validate_hotfix_branch_exists "$version"; then
         log_error "Cannot finish staging hotfix - branch not found"
         log_info "Please run: git trident staging hotfix start $version first"
         exit 1
@@ -653,7 +704,7 @@ staging_hotfix_finish() {
     fi
 
     # Show and confirm hotfix changes
-    if ! show_hotfix_changes "$hotfix_branch" "$latest_rc" "$tag_name"; then
+    if ! stg_show_hotfix_changes "$hotfix_branch" "$latest_rc" "$tag_name"; then
         return 1
     fi
 
@@ -678,7 +729,9 @@ staging_hotfix_finish() {
     check_hotfix_impact "$version"
 
     # Step 7: Show summary
-    show_hotfix_completion_summary "$version" "$rc_number" "$tag_name"
+    stg_show_hotfix_completion_summary "$version" "$rc_number" "$tag_name"
 
+    gt_release_rc_lock
+    trap - EXIT INT TERM
     return 0
 }

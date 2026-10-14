@@ -18,6 +18,10 @@
 # REQUIRED — BRANCH NAMES
 # =============================================================================
 
+# Schema version of this file. Leave it alone unless a release note says
+# otherwise; `git trident config validate` warns when it is behind.
+CONFIG_SCHEMA_VERSION="1"
+
 PRODUCTION_BRANCH="production"
 STAGING_BRANCH="staging"
 DEVELOP_BRANCH="develop"
@@ -115,11 +119,6 @@ CHANGELOG_QA_EXCLUDED_PREFIXES=""
 # Prefixes to exclude from RELEASE_NOTES.md (production).
 CHANGELOG_RELEASE_EXCLUDED_PREFIXES="wip|cmd"
 
-# [DEPRECATED / DISABLED] Changelog Webhook delivery is an incomplete feature
-# pending a full refactor. These keys are recognised but have no effect.
-# CHANGELOG_WEBHOOK_URL=""
-# CHANGELOG_WEBHOOK_AUTH=""
-# CHANGELOG_WEBHOOK_FORMAT="raw"
 
 # =============================================================================
 # EXAMPLE CONFIGURATIONS

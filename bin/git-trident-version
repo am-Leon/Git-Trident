@@ -2,7 +2,36 @@
 # Git Trident Tools Version Management
 # Enhanced with platform-specific diagnostics and advanced analytics
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See CONTRIBUTING.md (Bash 3.2 cookbook).
+set -o pipefail
+
+# --- Git Trident entry-point preamble (A1a) ---------------------------------
+# Resolve this script's REAL location, following symlinks, so the tool works
+# when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)
+# and when installed to a custom directory.
+#
+# Portability notes (macOS / Linux / Windows Git Bash):
+#   * plain `readlink`, never `readlink -f` — `-f` is GNU-only and missing on
+#     macOS before 12.3; plain readlink is POSIX and present on BSD and MSYS2.
+#   * the loop follows symlink CHAINS and relative link targets.
+#   * on Windows, `ln -s` normally copies rather than links, so [ -L ] is false
+#     and the loop is simply skipped — correct behaviour either way.
+GT_SELF="${BASH_SOURCE[0]}"
+while [ -L "$GT_SELF" ]; do
+    GT_LINK_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+    GT_SELF="$(readlink "$GT_SELF")"
+    case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# GT_INSTALL_ROOT is part of the shared entry-point contract: every script sets
+# it, and git-trident-hooks (discover_install_dir) and git-trident-version
+# (passing the install root to the updater) read it. Scripts that do not read it
+# still define it so the preamble stays identical everywhere.
+# shellcheck disable=SC2034
+GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+# ----------------------------------------------------------------------------
 
 # Suppress validation errors for diagnostic commands
 export SUPPRESS_CONFIG_ERRORS=true
@@ -253,7 +282,7 @@ show_config_info() {
     fi
 
     local project_cfg_found=false
-    for pcfg in "./git-trident-config" "./.git-trident-config"; do
+    for pcfg in "$(gt_repo_path "$CONFIG_FILE_NAME")" "$(gt_repo_path ".$CONFIG_FILE_NAME")"; do
         if [[ -f "$pcfg" ]]; then
             local file_age; file_age=$(get_file_age "$pcfg" 2>/dev/null || echo "N/A")
             local age_display=""
@@ -524,7 +553,12 @@ check_for_updates() {
     local latest_tag=""
     if [[ -n "$response" ]]; then
         # Robust JSON parsing: strips optional leading 'v' if present
-        latest_tag=$(echo "$response" | awk -F'"' '/"tag_name":/ {print $4; exit}' | sed 's/^v//')
+        # Keep the tag EXACTLY as GitHub reports it (e.g. "v0.1.1"). It is the
+        # release identifier used to build the download URL, so stripping the
+        # leading "v" here produced a URL that always 404'd:
+        #   .../releases/download/0.1.1/git-trident.tar.gz   -> 404
+        #   .../releases/download/v0.1.1/git-trident.tar.gz  -> 200
+        latest_tag=$(echo "$response" | awk -F'"' '/"tag_name":/ {print $4; exit}')
     fi
 
     if [[ -z "$latest_tag" ]]; then
@@ -537,11 +571,21 @@ check_for_updates() {
     log_info "   • Latest Tag:    $latest_tag"
     log_empty ""
 
-    local cur_clean="$current_version"
-    local new_clean="$latest_tag"
+    # Compare on the numeric version; "v" belongs to the tag, not the version.
+    local latest_version="${latest_tag#v}"
 
-    if [[ "$cur_clean" == "$new_clean" ]]; then
+    if [[ "$current_version" == "$latest_version" ]]; then
         log_info "✅ You are running the latest version ($current_version)."
+        log_empty ""
+        return 0
+    fi
+
+    # A local build can legitimately be AHEAD of the newest published release.
+    # String inequality alone would offer a silent downgrade, so require that
+    # the remote version is genuinely greater before reporting an update.
+    if ! is_version_greater "$latest_version" "$current_version"; then
+        log_info "✅ You are running $current_version, which is ahead of the latest"
+        log_info "   published release ($latest_version). Nothing to do."
         log_empty ""
         return 0
     fi
@@ -549,7 +593,7 @@ check_for_updates() {
     # An update is available — handle according to mode
     case "$mode" in
         check)
-            log_warn "🚀 Update available: $current_version → $latest_tag"
+            log_warn "🚀 Update available: $current_version → $latest_version"
             log_info "👉 Run 'git trident version update' to install."
             log_empty ""
             return 1   # Non-zero exit code signals "update available" for scripts
@@ -557,19 +601,19 @@ check_for_updates() {
         dry-run)
             log_info "🔍 DRY RUN — No changes will be made."
             log_info "   Current:  $current_version"
-            log_info "   Latest:   $latest_tag"
+            log_info "   Latest:   $latest_version  (tag: $latest_tag)"
             log_info "   Source:   https://github.com/${GITHUB_REPO}/releases/tag/${latest_tag}"
             log_info "   Action:   Download installer to temp file"
-            log_info "             Run: INSTALL_VERSION=$latest_tag bash <tmp-file>"
+            log_info "             Run: INSTALL_VERSION=$latest_tag bash <tmp-file> \"$GT_INSTALL_ROOT\""
             log_empty ""
             return 0
             ;;
         update)
-            log_warn "🚀 Update available: $current_version → $latest_tag"
+            log_warn "🚀 Update available: $current_version → $latest_version"
             log_empty ""
 
             if [[ "$auto_apply" != true ]]; then
-                echo -n "Install $current_version → $latest_tag? [Y/n]: "
+                echo -n "Install $current_version → $latest_version? [Y/n]: "
                 read -r response
                 if [[ "$response" =~ ^([nN][oO]?|[nN])$ ]]; then
                     log_info "Update cancelled."
@@ -577,7 +621,7 @@ check_for_updates() {
                 fi
             fi
 
-            log_step "Initiating upgrade to $latest_tag..."
+            log_step "Initiating upgrade to $latest_version..."
 
             if ! command -v curl >/dev/null 2>&1; then
                 log_error "curl is required to perform auto-upgrade."
@@ -596,9 +640,17 @@ check_for_updates() {
 
             log_info "Running installer..."
             export INSTALL_VERSION="$latest_tag"
-            if bash "$tmp_installer"; then
+
+            # Pass the CURRENT install root. Without an argument the installer
+            # defaults to $HOME/.git-trident, so updating a custom installation
+            # created a SECOND copy at the default location and repointed the
+            # profile's PATH at it, silently orphaning the chosen directory.
+            # GT_INSTALL_ROOT comes from the entry-point preamble and is already
+            # symlink-resolved.
+            log_info "Install root: $GT_INSTALL_ROOT"
+            if bash "$tmp_installer" "$GT_INSTALL_ROOT"; then
                 rm -f "$tmp_installer"
-                log_info "✅ Successfully upgraded to $latest_tag!"
+                log_info "✅ Successfully upgraded to $latest_version!"
                 exit 0
             else
                 rm -f "$tmp_installer"
@@ -615,8 +667,12 @@ check_for_updates() {
 
 parse_arguments() {
     local command=""
+    # Honour the global --dry-run / --yes consumed by the dispatcher, while the
+    # command's own flags keep working for direct invocation.
     DRY_RUN=false
+    gt_is_dry_run && DRY_RUN=true
     SKIP_CONFIRM=false
+    [[ "${GT_ASSUME_YES:-false}" == "true" ]] && SKIP_CONFIRM=true
 
     while [[ $# -gt 0 ]]; do
         case "$1" in

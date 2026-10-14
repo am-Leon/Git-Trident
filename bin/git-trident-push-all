@@ -2,7 +2,36 @@
 # Push all local changes to remote after manual review - Multi-platform support with classification
 # Optimized with enhanced platform propagation analysis and safety checks
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fail a pipeline when ANY stage fails, not just the last one. Safe on Bash 3.2.
+# `set -u` is deliberately NOT used: on 3.2 it makes expanding an empty array
+# fatal, and there are 80+ such expansions. See CONTRIBUTING.md (Bash 3.2 cookbook).
+set -o pipefail
+
+# --- Git Trident entry-point preamble (A1a) ---------------------------------
+# Resolve this script's REAL location, following symlinks, so the tool works
+# when the entry point is symlinked onto PATH (e.g. /usr/local/bin/git-trident)
+# and when installed to a custom directory.
+#
+# Portability notes (macOS / Linux / Windows Git Bash):
+#   * plain `readlink`, never `readlink -f` — `-f` is GNU-only and missing on
+#     macOS before 12.3; plain readlink is POSIX and present on BSD and MSYS2.
+#   * the loop follows symlink CHAINS and relative link targets.
+#   * on Windows, `ln -s` normally copies rather than links, so [ -L ] is false
+#     and the loop is simply skipped — correct behaviour either way.
+GT_SELF="${BASH_SOURCE[0]}"
+while [ -L "$GT_SELF" ]; do
+    GT_LINK_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+    GT_SELF="$(readlink "$GT_SELF")"
+    case "$GT_SELF" in /*) ;; *) GT_SELF="$GT_LINK_DIR/$GT_SELF" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$GT_SELF")" && pwd)"
+# GT_INSTALL_ROOT is part of the shared entry-point contract: every script sets
+# it, and git-trident-hooks (discover_install_dir) and git-trident-version
+# (passing the install root to the updater) read it. Scripts that do not read it
+# still define it so the preamble stays identical everywhere.
+# shellcheck disable=SC2034
+GT_INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+# ----------------------------------------------------------------------------
 
 # Source common utilities
 source "$SCRIPT_DIR/../lib/git-trident-common.sh"
@@ -44,7 +73,8 @@ analyze_tag_propagation_impact() {
         clean_tag="${tag#"${PRODUCTION_TAG_PREFIX}"}"
         tag_type="production"
     else
-        echo "unknown:unknown:0:unknown:unknown"
+        # Always SIX fields: callers read six with IFS=':'.
+        echo "unknown:unknown:0:unknown:unknown:❓"
         return
     fi
 
@@ -53,7 +83,7 @@ analyze_tag_propagation_impact() {
     local platform_type=$(get_platform_type_from_version "$clean_tag")
 
     if [ -z "$platform" ] || [ -z "$platform_type" ]; then
-        echo "unknown:unknown:0:unknown:$tag_type"
+        echo "unknown:unknown:0:unknown:$tag_type:❓"
         return
     fi
 
@@ -221,7 +251,7 @@ check_common_platform_impact() {
 get_cached_remote_tags() {
     local remote="$1"
     local platform_filter="${2:-}"
-    local cache_file=".git/git-trident-remote-tags-$remote"
+    local cache_file="$(gt_git_path "git-trident-remote-tags-$remote")"
     local cache_age="${REMOTE_TAG_CACHE_DURATION:-300}"
 
     # Platform-specific cache file
@@ -241,9 +271,23 @@ get_cached_remote_tags() {
         log_debug "Cache expired (age: ${file_age}s), refreshing..."
     fi
 
-    # Fetch fresh remote tags (only Git Trident tags for efficiency)
+    # Fetch fresh remote tags (only Git Trident tags for efficiency).
+    #
+    # Capture ls-remote SEPARATELY from the filtering pipeline so its exit status
+    # is visible. Previously a network failure produced an empty result that was
+    # cached as authoritative for REMOTE_TAG_CACHE_DURATION (300s by default),
+    # after which every local tag looked unpushed.
     log_debug "Fetching remote tags from $remote..."
-    local remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null | \
+    local ls_remote_output ls_remote_rc
+    ls_remote_output=$(git ls-remote --tags "$remote" 2>/dev/null)
+    ls_remote_rc=$?
+
+    if [ $ls_remote_rc -ne 0 ]; then
+        log_warn "Could not reach remote '$remote'; not caching an empty tag list"
+        return 1
+    fi
+
+    local remote_tags=$(printf '%s\n' "$ls_remote_output" | \
         grep -E "(refs/tags/${STAGING_TAG_PREFIX}|refs/tags/${PRODUCTION_TAG_PREFIX})" | \
         cut -f2 | \
         sed 's|refs/tags/||')
@@ -270,19 +314,29 @@ clear_remote_tag_cache() {
     local platform_filter="${2:-}"
 
     if [ -n "$platform_filter" ]; then
-        local cache_file=".git/git-trident-remote-tags-$remote-$platform_filter"
+        local cache_file="$(gt_git_path "git-trident-remote-tags-$remote-$platform_filter")"
         if [ -f "$cache_file" ]; then
             rm -f "$cache_file"
             log_debug "Cleared platform-specific cache: $cache_file"
         fi
     else
-        # Clear all cache files for this remote
-        local cache_pattern=".git/git-trident-remote-tags-$remote*"
-        if ls "$cache_pattern" 2>/dev/null >/dev/null; then
-            rm -f "$cache_pattern"
-            log_debug "Cleared all cache files for remote: $remote"
-        fi
+        # Clear every cache file for this remote.
+        #
+        # The glob must be UNQUOTED so the shell expands it. The previous form,
+        #     cache_pattern=".git/git-trident-remote-tags-$remote*"
+        #     if ls "$cache_pattern"; then rm -f "$cache_pattern"; fi
+        # passed a literal '*' to ls and rm, so the test never succeeded and the
+        # cache was never cleared — leaving stale data for up to 300 seconds
+        # after a tag push.
+        local cleared=0 cache_file
+        for cache_file in "$(gt_git_path "git-trident-remote-tags-$remote")"*; do
+            [ -f "$cache_file" ] || continue   # no matches: the glob stays literal
+            rm -f "$cache_file"
+            cleared=$((cleared + 1))
+        done
+        [ "$cleared" -gt 0 ] && log_debug "Cleared $cleared cache file(s) for remote: $remote"
     fi
+    return 0
 }
 
 # =============================================================================
@@ -650,7 +704,7 @@ show_push_summary() {
     # Tag analysis
     log_info "🏷️  TAG ANALYSIS:"
     local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
-    local tag_count=$(echo "$unpushed_tags" | wc -l | tr -d ' ')
+    local tag_count=$(count_lines "$unpushed_tags")
 
     if [ "$tag_count" -gt 0 ]; then
         log_info "  📦 Tags: $tag_count new tag(s)"
@@ -801,16 +855,31 @@ push_branch() {
     local remote="${2:-$REMOTE}"
 
     log_step "Pushing $branch to $remote..."
-    if git push "$remote" "$branch" 2>&1 | tee /dev/stderr | grep -q "Everything up-to-date"; then
-        log_info "✅ $branch already up to date"
-        return 0
-    elif git push "$remote" "$branch"; then
-        log_info "✓ $branch pushed successfully"
-        return 0
-    else
+
+    # Push ONCE and inspect git's own exit status.
+    #
+    # The previous form ran `git push ... | tee /dev/stderr | grep -q` in the
+    # `if`, which (a) actually performed the push inside the test, (b) yielded
+    # grep's exit status rather than git's, and (c) pushed a SECOND time in the
+    # elif whenever the output did not say "Everything up-to-date".
+    local output rc
+    output=$(git push "$remote" "$branch" 2>&1)
+    rc=$?
+
+    if [ $rc -ne 0 ]; then
         log_error "Failed to push $branch"
+        while IFS= read -r _line; do
+            [ -n "$_line" ] && log_empty "   $_line"
+        done <<< "$output"
         return 1
     fi
+
+    if printf '%s' "$output" | grep -q "Everything up-to-date"; then
+        log_info "✅ $branch already up to date"
+    else
+        log_info "✓ $branch pushed successfully"
+    fi
+    return 0
 }
 
 push_tags() {
@@ -821,9 +890,16 @@ push_tags() {
 
     # Get tags to push
     local unpushed_tags=$(get_unpushed_tags "$remote" "$platform_filter")
-    local tag_count=$(echo "$unpushed_tags" | wc -l | tr -d ' ')
+    local tag_count=$(count_lines "$unpushed_tags")
 
     if [ "$tag_count" -eq 0 ]; then
+        log_info "✅ No tags to push"
+        return 0
+    fi
+
+    # Guard: `while read <<< ""` still performs ONE iteration with an empty
+    # value, which would attempt `git push <remote> ""`.
+    if [ -z "$unpushed_tags" ]; then
         log_info "✅ No tags to push"
         return 0
     fi
@@ -936,7 +1012,7 @@ perform_push_operations() {
     fi
 
     # Push tags
-    local tag_count=$(get_unpushed_tags "$remote" "$platform_filter" | wc -l | tr -d ' ')
+    local tag_count=$(count_lines "$(get_unpushed_tags "$remote" "$platform_filter")")
 
     if [ "$tag_count" -gt 0 ]; then
         log_info "Pushing $tag_count tag(s)..."
@@ -955,7 +1031,16 @@ perform_push_operations() {
 # ARGUMENT PARSING AND HELP
 # =============================================================================
 
+# Sets GT_ARG_REMOTE / GT_ARG_PLATFORM. Does NOT echo a result.
+#
+# The previous form echoed "$remote $platform_filter" and the caller split it
+# with `read`, which loses empty fields; it also meant the `exit 1` below ran
+# inside a command substitution, terminating only the subshell while main()
+# continued with an empty remote.
 parse_arguments() {
+    GT_ARG_REMOTE="$REMOTE"
+    GT_ARG_PLATFORM=""
+
     local remote="$REMOTE"
     local platform_filter=""
 
@@ -978,7 +1063,9 @@ parse_arguments() {
         shift
     done
 
-    echo "$remote $platform_filter"
+    GT_ARG_REMOTE="$remote"
+    GT_ARG_PLATFORM="$platform_filter"
+    return 0
 }
 
 # =============================================================================
@@ -987,7 +1074,9 @@ parse_arguments() {
 
 main() {
     # Parse arguments
-    IFS=' ' read -r remote platform_filter <<< "$(parse_arguments "$@")"
+    parse_arguments "$@" || exit 1
+    local remote="$GT_ARG_REMOTE"
+    local platform_filter="$GT_ARG_PLATFORM"
 
     # Initialize
     log_info "🚀 Git Trident Push All"
@@ -1015,7 +1104,16 @@ main() {
         log_empty ""
     fi
 
-    # Fetch latest
+    # Fetch latest.
+    #
+    # This runs under --dry-run too, and deliberately so: the report below is
+    # computed against remote-tracking refs, so skipping the fetch would make
+    # --dry-run describe a remote state that may be hours stale — a confident
+    # wrong answer, which is worse than none.
+    #
+    # It is the one thing --dry-run changes, and only in the sense that `git
+    # fetch` changes anything: refs/remotes/* are git's cache of the remote.
+    # No branch, tag, working-tree file or remote ref is touched.
     log_info "🔄 Fetching latest from $remote..."
     if ! git fetch "$remote"; then
         log_error "Failed to fetch from $remote"
@@ -1029,6 +1127,24 @@ main() {
     # Check if anything to push
     if ! has_any_changes "$remote" "$platform_filter"; then
         log_info "✅ Everything is up to date!"
+        exit 0
+    fi
+
+    # Stop here under --dry-run: the summary above is the whole report, and
+    # nothing below it is reversible.
+    if gt_is_dry_run; then
+        local b
+        for b in "$DEVELOP_BRANCH" "$STAGING_BRANCH" "$PRODUCTION_BRANCH"; do
+            check_branch_exists "$b" || continue
+            case "$(get_branch_push_status "$b" "$remote")" in
+                has_changes|new_branch) gt_would "push branch $b to $remote" ;;
+            esac
+        done
+        local t
+        while IFS= read -r t; do
+            [ -n "$t" ] && gt_would "push tag $t to $remote"
+        done <<< "$(get_unpushed_tags "$remote" "$platform_filter")"
+        gt_dry_run_stop
         exit 0
     fi
 

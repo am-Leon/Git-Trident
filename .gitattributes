@@ -1,0 +1,43 @@
+# =============================================================================
+# Git Trident — line-ending and mode policy
+# =============================================================================
+# Git Trident is a Bash tool that must run on macOS, Linux and Windows (Git Bash).
+#
+# On Windows, Git's default `core.autocrlf=true` rewrites files to CRLF on
+# checkout. A shell script with CRLF line endings is broken:
+#
+#     $ ./git-trident
+#     bash: ./git-trident: /bin/bash^M: bad interpreter: No such file or directory
+#
+# Forcing `eol=lf` makes the working tree LF on every platform, so the scripts
+# stay executable under Git Bash regardless of the user's autocrlf setting.
+# =============================================================================
+
+# Default: treat everything as text and always check out with LF.
+* text=auto eol=lf
+
+# Be explicit for the file types we ship, so intent survives future edits.
+*.sh        text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+
+# Extension-less executables in bin/ and hooks/ are shell scripts too.
+bin/*       text eol=lf
+hooks/*     text eol=lf
+
+# Config files and templates are sourced/parsed by bash — LF as well.
+templates/* text eol=lf
+
+# Never touch binaries.
+*.tar.gz    binary
+*.tgz       binary
+*.zip       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary

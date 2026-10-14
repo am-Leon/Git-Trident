@@ -45,6 +45,15 @@ REMOTE_TAG_CACHE_DURATION=300
 # "relaxed" – use defaults for missing values, warn only
 CONFIG_VALIDATION_MODE="strict"
 
+# How configuration files are read.
+# "strict" – parse KEY=VALUE only (recommended). Config files are NOT executed,
+#            so a committed project config cannot run code on a teammate's
+#            machine, and unknown keys are reported instead of silently ignored.
+# "legacy" – `source` the file as shell. Only needed if your config uses shell
+#            expressions (command substitution, variable interpolation).
+#            Deprecated; it will be removed in a future release.
+CONFIG_PARSER="strict"
+
 # =============================================================================
 # [GLOBAL ONLY] DEBUGGING & LOGGING
 # =============================================================================

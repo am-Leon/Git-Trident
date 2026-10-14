@@ -16,7 +16,7 @@ source "$SCRIPT_DIR/git-trident-version-utils.sh"
 # VALIDATION FUNCTIONS
 # =============================================================================
 
-validate_release_branch_exists() {
+prod_validate_release_branch_exists() {
     local version="$1"
     local release_branch="${RELEASE_PRODUCTION_PREFIX}${version}"
 
@@ -30,7 +30,7 @@ validate_release_branch_exists() {
     fi
 }
 
-validate_hotfix_branch_exists() {
+prod_validate_hotfix_branch_exists() {
     local version="$1"
     local hotfix_branch="${HOTFIX_PRODUCTION_PREFIX}${version}"
 
@@ -112,6 +112,14 @@ create_production_release_branch() {
     log_info "Automatically using latest staging RC: $staging_tag"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "check out $staging_tag"
+        gt_would "create branch $release_branch"
+        gt_would "(on finish) create tag ${PRODUCTION_TAG_PREFIX}${version}"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Checkout the staging RC
@@ -127,7 +135,7 @@ create_production_release_branch() {
     echo "$release_branch"
 }
 
-show_release_preparation_summary() {
+prod_show_release_preparation_summary() {
     local release_branch="$1"
     local staging_tag="$2"
     
@@ -157,7 +165,7 @@ production_release_start() {
     local release_branch=$(create_production_release_branch "$version" "$latest_staging_rc")
     
     # Show summary
-    show_release_preparation_summary "$release_branch" "$latest_staging_rc"
+    prod_show_release_preparation_summary "$release_branch" "$latest_staging_rc"
 }
 
 # =============================================================================
@@ -268,7 +276,7 @@ check_staging_synchronization() {
     fi
 }
 
-show_release_completion_summary() {
+prod_show_release_completion_summary() {
     local version="$1"
     local tag_name="$2"
     
@@ -293,10 +301,20 @@ production_release_finish() {
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "merge $release_branch into $PRODUCTION_BRANCH"
+        gt_would "create tag $tag_name from $PRODUCTION_BRANCH"
+        gt_would "merge $PRODUCTION_BRANCH into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $release_branch"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Validate release branch exists
-    if ! validate_release_branch_exists "$version"; then
+    if ! prod_validate_release_branch_exists "$version"; then
         log_error "Cannot finish production release - branch not found"
         log_info "Please run: git trident production release start $version first"
         exit 1
@@ -342,7 +360,7 @@ production_release_finish() {
     auto_push_if_enabled "$version"
 
     # Step 9: Show summary
-    show_release_completion_summary "$version" "$tag_name"
+    prod_show_release_completion_summary "$version" "$tag_name"
 
     return 0
 }
@@ -386,7 +404,7 @@ verify_hotfix_base() {
     fi
 }
 
-show_hotfix_changes() {
+prod_show_hotfix_changes() {
     local hotfix_branch="$1"
     local version="$2"
     
@@ -447,6 +465,14 @@ create_production_hotfix_branch() {
     log_info "Starting from latest production branch"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "check out $PRODUCTION_BRANCH"
+        gt_would "create branch $hotfix_branch"
+        gt_would "(on finish) create tag ${PRODUCTION_TAG_PREFIX}${next_version}"
+        gt_dry_run_stop
+        return 1
+    fi
+
     assert_clean_working_tree
 
     # Checkout production branch
@@ -462,7 +488,7 @@ create_production_hotfix_branch() {
     echo "$hotfix_branch $next_version"
 }
 
-show_hotfix_preparation_summary() {
+prod_show_hotfix_preparation_summary() {
     local hotfix_branch="$1"
     local next_version="$2"
     local platform="${3:-}"
@@ -509,7 +535,7 @@ production_hotfix_start() {
         return 1
     fi
 
-    show_hotfix_preparation_summary "$hotfix_branch" "$next_version" "$platform"
+    prod_show_hotfix_preparation_summary "$hotfix_branch" "$next_version" "$platform"
     return 0
 }
 
@@ -589,7 +615,7 @@ sync_hotfix_downstream() {
     return 0
 }
 
-show_hotfix_completion_summary() {
+prod_show_hotfix_completion_summary() {
     local version="$1"
     local tag_name="$2"
     
@@ -618,13 +644,23 @@ production_hotfix_finish() {
     log_info "Will create tag: $tag_name"
     log_info "=========================================="
 
+    if gt_is_dry_run; then
+        gt_would "merge $hotfix_branch into $PRODUCTION_BRANCH"
+        gt_would "create tag $tag_name from $PRODUCTION_BRANCH"
+        gt_would "merge $PRODUCTION_BRANCH into $STAGING_BRANCH"
+        gt_would "merge $STAGING_BRANCH into $DEVELOP_BRANCH"
+        [ "${DELETE_BRANCH_ON_FINISH:-true}" = "true" ] && gt_would "delete branch $hotfix_branch"
+        gt_dry_run_stop
+        return 0
+    fi
+
     assert_clean_working_tree
 
     # Verify hotfix is based on latest production
     verify_hotfix_base "$hotfix_branch"
 
     # Show and confirm hotfix changes
-    if ! show_hotfix_changes "$hotfix_branch" "$version"; then
+    if ! prod_show_hotfix_changes "$hotfix_branch" "$version"; then
         return 1
     fi
 
@@ -654,7 +690,7 @@ production_hotfix_finish() {
     auto_push_if_enabled "$version"
 
     # Step 7: Show summary
-    show_hotfix_completion_summary "$version" "$tag_name"
+    prod_show_hotfix_completion_summary "$version" "$tag_name"
 
     return 0
 }

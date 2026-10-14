@@ -60,7 +60,7 @@ Running `git trident staging release start <version>`:
 1. Validates that the version format is correct (`MAJOR.MINOR.PATCH`).
 2. Confirms that no previous Release Candidate tags or branches exist for this version.
 3. Checks out the `develop` branch (or a specified commit) and pulls updates.
-4. Creates a new release branch named `release/staging/<version>`.
+4. Creates a new release branch named `release/stg/<version>`.
 
 *Note: The command only checks out the new branch. No git tags or release candidates are created at this stage.*
 
@@ -68,7 +68,7 @@ Running `git trident staging release start <version>`:
 
 If the QA team identifies a bug in the project build output, a staging hotfix is executed:
 
-1. `git trident staging hotfix start <version>` checks out a branch `hotfix/staging/<version>` stemming from the latest
+1. `git trident staging hotfix start <version>` checks out a branch `hotfix/stg/<version>` stemming from the latest
    RC tag (e.g. `staging/1.0.0-rc-01`).
 2. The developer makes changes, updates version or QA notes, and commits the fixes.
 3. Running `git trident staging hotfix finish <version>` creates the next increment tag (`staging/1.0.0-rc-02`), merges
@@ -96,7 +96,7 @@ Production releases promote validated staging releases to the live environment.
 [ staging/1.0.0-rc-02 ] (Latest RC Tag)
           │
           ▼ (production release start)
-[ release/prod-1.0.0 ] (Release Branch)
+[ release/prod/1.0.0 ] (Release Branch)
           │
           ▼ (production release finish)
 [ production ] (Merge & Tag production/1.0.0)
@@ -109,7 +109,7 @@ Production releases promote validated staging releases to the live environment.
 #### Promoting Staging to Production
 
 1. **Start**: Running `git trident production release start 1.0.0` looks up the highest staging RC tag (e.g.,
-   `staging/1.0.0-rc-02`) and checks out a temporary release branch `release/prod-1.0.0` from that tag.
+   `staging/1.0.0-rc-02`) and checks out a temporary release branch `release/prod/1.0.0` from that tag.
 2. **Finish**: Running `git trident production release finish 1.0.0` merges the temporary release branch into the
    `production` branch, creates the immutable tag `production/1.0.0`, and deletes the release branch.
 3. **Upstream Sync**: It automatically propagates the production release commits back to both the `staging` and
@@ -212,6 +212,57 @@ Initiates the self-upgrade flow:
 - `--yes` or `-y`: Automatically accepts the confirmation prompt (suited for non-interactive scripting/CI).
 - **Behavior**: Downloads the latest `install.sh` from the repository to a temp location and runs it, which
   automatically replaces the binaries and re-sources shell PATH configurations.
+
+---
+
+## 🔍 Previewing and Recovering
+
+### `--dry-run`
+
+Valid with any command. Release and hotfix flows do **not** attempt to simulate
+the merges that follow — those depend on content that cannot be known without
+performing them, so a simulation would either be inaccurate or would have to do
+the work. Instead each flow prints the exact sequence it would perform and exits
+before its first write:
+
+```
+$ git trident --dry-run staging release finish 1.0.0
+   [dry-run] would create tag staging/1.0.0-rc-01 from release/stg/1.0.0
+   [dry-run] would merge release/stg/1.0.0 into staging
+   [dry-run] would merge staging into develop
+   [dry-run] would delete branch release/stg/1.0.0
+🔍 DRY RUN — nothing was changed.
+```
+
+Covered: staging and production release/hotfix start and finish, `push-all`,
+`cleanup prune tags`, `cleanup prune temp`, `cleanup sync branches`, `sync-tags`
+and `abort`. `tests/test_e2e_dry_run.sh` fingerprints refs, the working tree and
+the remote before and after each one.
+
+One documented exception: `push-all --dry-run` runs `git fetch`. Its report is
+computed against remote-tracking refs, so skipping the fetch would make it
+describe a remote state that may be hours stale. The fetch updates `refs/remotes/*`
+— git's cache of the remote — and nothing else: no branch, tag, working-tree
+file or remote ref is touched, which the suite asserts explicitly.
+
+### `--json`
+
+```bash
+git trident status --json 2>/dev/null | jq .
+```
+
+Emits machine-readable status on stdout while logs go to stderr, so the two never
+interleave. Fields include `synchronized`, `production_in_staging`,
+`staging_in_develop`, tag counts, `latest_production`, `orphaned_temp_branches`
+and `merge_in_progress`. The exit status still reflects synchronisation, so it
+works as a CI check as well as a data source.
+
+### `doctor` and `abort`
+
+`git trident doctor` diagnoses five layers in dependency order and stops at the
+first broken one. `git trident abort` unwinds a partially-completed flow,
+removing only local, unpushed refs. See
+[QUICK_START](QUICK_START.md#-when-something-goes-wrong).
 
 ---
 
