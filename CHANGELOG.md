@@ -7,7 +7,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [0.2.0] — Unreleased
+## [0.2.0] — 2026-10-14
 
 A correctness and portability release. Six commands did not work at all, and the
 documented installation method could not succeed on macOS. Every defect listed

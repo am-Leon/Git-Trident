@@ -20,7 +20,7 @@ unset TRIDENT_VERSION
 unset GITHUB_REPO
 unset GITHUB_RELEASE_API
 source "$PROJECT_ROOT/lib/git-trident-constants.sh"
-assert_equals "$TRIDENT_VERSION" "0.1.1" "Version constant is correct"
+assert_equals "$TRIDENT_VERSION" "0.2.0" "Version constant is correct"
 assert_equals "$GITHUB_REPO" "am-Leon/Git-Trident" "GitHub repo constant is correct"
 assert_equals "$GITHUB_RELEASE_API" "https://api.github.com/repos/am-Leon/Git-Trident/releases/latest" "Release API constant is correct"
 
@@ -39,7 +39,7 @@ export STAGING_TAG_PREFIX="staging/"
 export PRODUCTION_TAG_PREFIX="production/"
 
 source "$PROJECT_ROOT/lib/git-trident-common.sh" --no-init >/dev/null 2>&1
-assert_equals "$TRIDENT_VERSION" "0.1.1" "Version loaded via common.sh"
+assert_equals "$TRIDENT_VERSION" "0.2.0" "Version loaded via common.sh"
 assert_equals "$GITHUB_REPO" "am-Leon/Git-Trident" "GitHub repo loaded via common.sh"
 
 # RI_04_BUILD_SCRIPT_SYNCS_REPO
@@ -95,8 +95,11 @@ normalise() {
     printf '%s' "$INSTALL_VERSION"
 }
 
-assert_equals "$(normalise "0.1.1")"  "v0.1.1" "A bare version gains the v prefix"
-assert_equals "$(normalise "v0.1.1")" "v0.1.1" "A v-prefixed version is left alone"
+# Deliberately NOT the project version. These are fixtures for the prefixing
+# rule, and when they used the real version a release bump rewrote the input
+# but not the expected output, leaving "normalise(0.2.0) == v0.1.1".
+assert_equals "$(normalise "1.2.3")"  "v1.2.3" "A bare version gains the v prefix"
+assert_equals "$(normalise "v1.2.3")" "v1.2.3" "A v-prefixed version is left alone"
 assert_equals "$(normalise "latest")" "latest" "'latest' is not prefixed"
 
 # And the installer itself really contains that normalisation.
